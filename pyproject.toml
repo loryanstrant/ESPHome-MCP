@@ -1,0 +1,45 @@
+[project]
+name = "esphome-mcp"
+dynamic = ["version"]
+description = "MCP server for interacting with an ESPHome dashboard"
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "httpx>=0.27.0",
+    "websockets>=13.0",
+    "pydantic-settings>=2.0.0",
+]
+
+[project.scripts]
+esphome-mcp = "esphome_mcp.__main__:main"
+esphome-mcp-web = "esphome_mcp.__main__:main_web"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.0",
+    "ty>=0.0.20",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "esphome",
+]
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "TCH", "RUF"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ty.environment]
+python-version = "3.13"
