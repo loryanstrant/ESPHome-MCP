@@ -58,7 +58,7 @@ reachable.
 Once the registry image is published, pin it in `compose.yaml`:
 
 ```yaml
-image: ghcr.io/loryans/esphome-mcp:latest
+image: ghcr.io/loryanstrant/esphome-mcp:latest
 ```
 
 ## Connect an MCP client
