@@ -555,7 +555,8 @@ def get_client() -> ESPHomeClient:
     """Return the shared client, creating it on first access."""
     global _client
     if _client is None:
-        settings = _settings_override or ESPHomeSettings()  # type: ignore[call-arg]
+        # Fields are populated from the environment by pydantic-settings.
+        settings = _settings_override or ESPHomeSettings()  # ty: ignore[missing-argument]
         _client = ESPHomeClient(settings)
     return _client
 
