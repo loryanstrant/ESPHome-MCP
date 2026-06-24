@@ -20,12 +20,16 @@ def _configure_logging() -> None:
 
 
 def _check_connectivity() -> None:
-    """Verify connectivity to the ESPHome dashboard, retrying on failure."""
+    """Verify connectivity to the ESPHome dashboard, retrying on failure.
+
+    Uses the cheap REST ``/version`` endpoint so the pre-flight check does not open
+    (and leave dangling) a WebSocket on a throwaway event loop — the persistent WS
+    connection is established lazily within the server's own loop on first tool call.
+    """
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            devices = asyncio.run(get_client().get_configured_devices())
-            names = [d.get("name", "unknown") for d in devices]
-            logger.info("Connected to ESPHome dashboard. Found %d device(s): %s", len(names), names)
+            version = asyncio.run(get_client().get_version())
+            logger.info("Connected to ESPHome dashboard (ESPHome %s)", version)
             return
         except Exception as e:
             logger.error(
