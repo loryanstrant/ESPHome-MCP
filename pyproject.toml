@@ -4,7 +4,7 @@ dynamic = ["version"]
 description = "MCP server for the ESPHome 2026.6+ Device Builder dashboard"
 license = "MIT"
 requires-python = ">=3.13"
-authors = [{ name = "loryans", email = "loryan@strant.com" }]
+authors = [{ name = "loryanstrant", email = "loryan@loryanstrant.com" }]
 dependencies = [
     "fastmcp>=2.0.0",
     "httpx>=0.27.0",
@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://gitea.strant.casa/loryans/ESPHome-MCP"
+Homepage = "https://github.com/loryanstrant/ESPHome-MCP"
 "Upstream (kdkavanagh)" = "https://github.com/kdkavanagh/esphome-mcp"
 
 [project.scripts]
