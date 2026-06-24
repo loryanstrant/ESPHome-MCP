@@ -1,21 +1,50 @@
+"""Async client for the ESPHome 2026.6+ "Device Builder" dashboard.
+
+ESPHome 2026.6 replaced the dashboard's legacy HTTP/per-action-WebSocket API with a
+single persistent WebSocket that carries namespaced JSON commands. This client speaks
+that protocol. See ``DECISIONS.md`` for the full reverse-engineered protocol notes.
+
+Protocol summary
+----------------
+* Connect to ``ws(s)://<host>/ws``. On connect the server pushes one **server_info**
+  frame, e.g. ``{"server_version": "...", "esphome_version": "...", "requires_auth": false}``.
+  If ``requires_auth`` is true, send ``auth/login`` and include the returned token.
+* Request envelope: ``{"command": "<ns/action>", "message_id": <int>, "args": {...}}``.
+* Responses correlate by ``message_id`` (returned as a **string**):
+    - success:      ``{"message_id": "1", "result": <payload>}``
+    - failure:      ``{"message_id": "1", "error_code": "...", "details": "..."}``
+    - stream line:  ``{"message_id": "1", "event": "output", "data": "<line>"}``
+    - stream end:   ``{"message_id": "1", "event": "result", "data": <final payload>}``
+"""
+
 from __future__ import annotations
 
 import asyncio
-import base64
+import contextlib
 import io
 import json
 import logging
+import re
 import sys
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import httpx
 import websockets
 from pydantic_settings import BaseSettings
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 logger = logging.getLogger(__name__)
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 
 class ESPHomeSettings(BaseSettings):
@@ -26,237 +55,413 @@ class ESPHomeSettings(BaseSettings):
     esphome_dashboard_password: str = ""
 
 
+class DashboardError(Exception):
+    """An error returned by the dashboard, or a transport failure."""
+
+    def __init__(self, message: str, error_code: str | None = None) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+
+
 class ESPHomeClient:
-    """Async client for the ESPHome dashboard web API."""
+    """Persistent-WebSocket client for the ESPHome Device Builder dashboard.
+
+    A single connection is shared across all tool calls. A background reader task
+    dispatches incoming frames to per-``message_id`` futures (request/response) and
+    stream handlers (``firmware/follow_job``, ``devices/logs``). The connection is
+    established lazily and re-established automatically if it drops.
+    """
 
     def __init__(self, settings: ESPHomeSettings) -> None:
-        self._base_url = settings.esphome_dashboard_url.rstrip("/")
-        self._auth: httpx.BasicAuth | None = None
-        self._ws_auth_header: dict[str, str] = {}
+        self._http_base = settings.esphome_dashboard_url.rstrip("/")
+        self._username = settings.esphome_dashboard_username
+        self._password = settings.esphome_dashboard_password
+        self._ws_url = self._derive_ws_url(self._http_base)
 
-        if settings.esphome_dashboard_username and settings.esphome_dashboard_password:
-            self._auth = httpx.BasicAuth(
-                settings.esphome_dashboard_username,
-                settings.esphome_dashboard_password,
-            )
-            credentials = base64.b64encode(
-                f"{settings.esphome_dashboard_username}:{settings.esphome_dashboard_password}".encode()
-            ).decode()
-            self._ws_auth_header = {"Authorization": f"Basic {credentials}"}
-            logger.info("Configured Basic Auth for dashboard at %s", self._base_url)
-        else:
-            logger.info("Configured dashboard client at %s (no auth)", self._base_url)
+        self._ws: Any = None
+        self._reader_task: asyncio.Task[None] | None = None
+        self._message_id = 0
+        self._pending: dict[str, asyncio.Future[Any]] = {}
+        self._streams: dict[str, dict[str, Any]] = {}
+        self._server_info: dict[str, Any] = {}
+        self._auth_token: str | None = None
+        self._connect_lock = asyncio.Lock()
+
+        logger.info("ESPHome dashboard client: http=%s ws=%s", self._http_base, self._ws_url)
+
+    # ------------------------------------------------------------------ helpers
+
+    @staticmethod
+    def _derive_ws_url(http_base: str) -> str:
+        parsed = urlparse(http_base)
+        scheme = "wss" if parsed.scheme == "https" else "ws"
+        path = parsed.path.rstrip("/")
+        return f"{scheme}://{parsed.netloc}{path}/ws"
 
     def _http_client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            base_url=self._base_url,
-            auth=self._auth,
-            timeout=30.0,
-        )
+        auth = None
+        if self._username and self._password:
+            auth = httpx.BasicAuth(self._username, self._password)
+        return httpx.AsyncClient(base_url=self._http_base, auth=auth, timeout=30.0)
 
-    def _ws_url(self, path: str) -> str:
-        parsed = urlparse(self._base_url)
-        scheme = "wss" if parsed.scheme == "https" else "ws"
-        return f"{scheme}://{parsed.netloc}{parsed.path.rstrip('/')}/{path.lstrip('/')}"
+    def _next_id(self) -> int:
+        self._message_id += 1
+        return self._message_id
 
-    async def get_devices(self) -> list[dict[str, Any]]:
-        """Fetch all devices from the dashboard."""
-        logger.debug("GET /devices (all)")
-        async with self._http_client() as client:
-            resp = await client.get("/devices")
-            resp.raise_for_status()
-            data: dict[str, Any] = resp.json()
-            configured: list[dict[str, Any]] = data.get("configured", [])
-            importable: list[dict[str, Any]] = data.get("importable", [])
-            logger.debug(
-                "Got %d configured, %d importable devices", len(configured), len(importable)
+    def _is_open(self) -> bool:
+        ws = self._ws
+        if ws is None:
+            return False
+        state = getattr(ws, "state", None)
+        return getattr(state, "name", "") == "OPEN"
+
+    # -------------------------------------------------------------- connection
+
+    async def _connect(self) -> None:
+        if self._is_open():
+            return
+        async with self._connect_lock:
+            if self._is_open():
+                return
+            logger.debug("Connecting WebSocket %s", self._ws_url)
+            ws = await websockets.connect(
+                self._ws_url,
+                max_size=None,
+                open_timeout=15,
+                ping_interval=20,
+                ping_timeout=20,
             )
-            return configured + importable
+            # First frame is the unsolicited server_info.
+            raw = await asyncio.wait_for(ws.recv(), timeout=10)
+            self._server_info = json.loads(raw)
+            logger.info(
+                "Connected to ESPHome Device Builder %s (server %s, requires_auth=%s)",
+                self._server_info.get("esphome_version"),
+                self._server_info.get("server_version"),
+                self._server_info.get("requires_auth"),
+            )
+            self._ws = ws
+            self._pending.clear()
+            self._streams.clear()
+            self._reader_task = asyncio.create_task(self._reader())
 
-    async def get_configured_devices(self) -> list[dict[str, Any]]:
-        """Fetch only configured devices from the dashboard."""
-        logger.debug("GET /devices (configured only)")
-        async with self._http_client() as client:
-            resp = await client.get("/devices")
-            resp.raise_for_status()
-            data: dict[str, Any] = resp.json()
-            result: list[dict[str, Any]] = data.get("configured", [])
-            logger.debug("Got %d configured devices", len(result))
-            return result
+            if self._server_info.get("requires_auth"):
+                await self._login()
+
+    async def _login(self) -> None:
+        args: dict[str, Any] = {}
+        if self._username:
+            args["username"] = self._username
+        if self._password:
+            args["password"] = self._password
+        if not args:
+            raise DashboardError(
+                "Dashboard requires authentication but no "
+                "ESPHOME_DASHBOARD_USERNAME/PASSWORD were provided."
+            )
+        result = await self._send("auth/login", args)
+        self._auth_token = result.get("token") if isinstance(result, dict) else None
+        logger.info("Authenticated to dashboard")
+
+    async def _reader(self) -> None:
+        ws = self._ws
+        try:
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                except (ValueError, TypeError):
+                    continue
+                self._dispatch(msg)
+        except (websockets.exceptions.WebSocketException, OSError) as e:
+            logger.warning("WebSocket reader stopped: %s", e)
+        finally:
+            self._fail_all(ConnectionError("WebSocket connection closed"))
+            if self._ws is ws:
+                self._ws = None
+
+    def _fail_all(self, exc: Exception) -> None:
+        for fut in self._pending.values():
+            if not fut.done():
+                fut.set_exception(exc)
+        self._pending.clear()
+        for stream in self._streams.values():
+            done = stream["done"]
+            if not done.done():
+                done.set_exception(exc)
+        self._streams.clear()
+
+    def _dispatch(self, msg: dict[str, Any]) -> None:
+        mid = msg.get("message_id")
+        if mid is None:
+            logger.debug("Unsolicited frame: %s", str(msg)[:200])
+            return
+        mid = str(mid)
+
+        if "error_code" in msg:
+            err = DashboardError(
+                msg.get("details") or msg.get("error_code", "unknown error"),
+                msg.get("error_code"),
+            )
+            fut = self._pending.pop(mid, None)
+            if fut is not None and not fut.done():
+                fut.set_exception(err)
+                return
+            stream = self._streams.pop(mid, None)
+            if stream is not None and not stream["done"].done():
+                stream["done"].set_exception(err)
+            return
+
+        if "event" in msg:
+            stream = self._streams.get(mid)
+            if stream is None:
+                return
+            event = msg.get("event")
+            if event == "output":
+                stream["on_line"](msg.get("data", ""))
+            elif event == "result":
+                self._streams.pop(mid, None)
+                if not stream["done"].done():
+                    stream["done"].set_result(msg.get("data"))
+            return
+
+        if "result" in msg:
+            fut = self._pending.pop(mid, None)
+            if fut is not None and not fut.done():
+                fut.set_result(msg.get("result"))
+
+    # --------------------------------------------------------- command / stream
+
+    async def _send(
+        self, command: str, args: dict[str, Any] | None = None, timeout: float = 30.0
+    ) -> Any:
+        """Send a command and await its correlated result, raising on error."""
+        await self._connect()
+        mid = self._next_id()
+        fut: asyncio.Future[Any] = asyncio.get_event_loop().create_future()
+        self._pending[str(mid)] = fut
+        payload: dict[str, Any] = {"command": command, "message_id": mid}
+        if args:
+            payload["args"] = args
+        logger.debug("WS -> %s (id=%d) args=%s", command, mid, list((args or {}).keys()))
+        await self._ws.send(json.dumps(payload))
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except TimeoutError:
+            self._pending.pop(str(mid), None)
+            raise DashboardError(f"Command {command!r} timed out after {timeout:.0f}s") from None
+
+    async def _follow_job(
+        self,
+        command: str,
+        args: dict[str, Any],
+        on_line: Callable[[str], None] | None = None,
+        timeout: float = 1200.0,
+    ) -> tuple[str, int]:
+        """Start a firmware job, follow its output stream, return (output, exit_code)."""
+        job = await self._send(command, args, timeout=60)
+        job_id = job.get("job_id") if isinstance(job, dict) else None
+        if not job_id:
+            raise DashboardError(f"{command}: no job_id in response: {str(job)[:200]}")
+
+        lines: list[str] = []
+
+        def collect(data: str) -> None:
+            lines.append(data)
+            if on_line is not None:
+                on_line(data)
+
+        await self._connect()
+        mid = self._next_id()
+        done: asyncio.Future[Any] = asyncio.get_event_loop().create_future()
+        self._streams[str(mid)] = {"on_line": collect, "done": done}
+        await self._ws.send(
+            json.dumps(
+                {"command": "firmware/follow_job", "message_id": mid, "args": {"job_id": job_id}}
+            )
+        )
+        try:
+            final = await asyncio.wait_for(done, timeout=timeout)
+        except TimeoutError:
+            self._streams.pop(str(mid), None)
+            raise DashboardError(f"Firmware job {job_id} timed out after {timeout:.0f}s") from None
+
+        exit_code: int | None = None
+        if isinstance(final, dict):
+            exit_code = final.get("exit_code")
+            # If the job finished before we attached, its buffered output is in `final`.
+            if not lines and isinstance(final.get("output"), list):
+                lines.extend(str(x) for x in final["output"])
+        if exit_code is None:
+            with contextlib.suppress(Exception):
+                polled = await self._send("firmware/get_job", {"job_id": job_id})
+                if isinstance(polled, dict):
+                    exit_code = polled.get("exit_code")
+
+        output = _strip_ansi("".join(lines))
+        return output, (exit_code if exit_code is not None else -1)
+
+    async def close(self) -> None:
+        if self._reader_task is not None:
+            self._reader_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._reader_task
+        if self._ws is not None:
+            with contextlib.suppress(Exception):
+                await self._ws.close()
+        self._ws = None
+
+    # ----------------------------------------------------------- high-level API
 
     async def get_version(self) -> str:
-        """Fetch the ESPHome version from the dashboard."""
-        logger.debug("GET /version")
+        """Fetch the ESPHome version (cheap REST call, also used for liveness)."""
         async with self._http_client() as client:
             resp = await client.get("/version")
             resp.raise_for_status()
-            version: str = resp.json().get("version", "unknown")
-            logger.debug("ESPHome version: %s", version)
-            return version
+            return resp.json().get("version", "unknown")
+
+    async def get_configured_devices(self) -> list[dict[str, Any]]:
+        """Fetch only configured devices via ``devices/list``."""
+        result = await self._send("devices/list")
+        configured: list[dict[str, Any]] = (result or {}).get("configured", [])
+        logger.debug("devices/list -> %d configured", len(configured))
+        return configured
+
+    async def get_devices(self) -> list[dict[str, Any]]:
+        """Fetch configured + importable devices."""
+        result = await self._send("devices/list")
+        result = result or {}
+        return list(result.get("configured", [])) + list(result.get("importable", []))
 
     async def ping(self) -> None:
-        """Request a ping status update for all devices."""
-        logger.debug("GET /ping")
-        async with self._http_client() as client:
-            resp = await client.get("/ping")
-            resp.raise_for_status()
+        """Lightweight keepalive / liveness command."""
+        with contextlib.suppress(Exception):
+            await self._send("ping", timeout=10)
 
     async def get_configuration(self, filename: str) -> str:
-        """Fetch the YAML configuration for a device."""
+        """Read a device's YAML configuration via ``devices/get_config``."""
         if not filename.endswith((".yaml", ".yml")):
             raise ValueError(f"Invalid configuration filename: {filename}")
-        logger.debug("GET /edit?configuration=%s", filename)
-        async with self._http_client() as client:
-            resp = await client.get("/edit", params={"configuration": filename})
-            resp.raise_for_status()
-            logger.debug("Got configuration for %s (%d bytes)", filename, len(resp.text))
-            return resp.text
-
-    async def _ws_spawn(
-        self,
-        path: str,
-        message: dict[str, Any],
-        timeout: float,
-        done_pattern: str | None = None,
-    ) -> tuple[str, int]:
-        """Run a WebSocket command and collect output.
-
-        Connects to the given WS path, sends the spawn message, and collects
-        line events until an exit event, a done pattern match, or timeout.
-
-        Args:
-            path: WebSocket endpoint path (e.g. "/logs", "/validate").
-            message: JSON message to send after connecting.
-            timeout: Maximum seconds to wait for the command to complete.
-            done_pattern: Optional substring to match in line data. When a line
-                contains this string, collection stops and exit code 0 is returned.
-                Useful for commands like ``esphome run`` that never exit on their
-                own because they transition into log-tailing mode after OTA.
-
-        Returns:
-            Tuple of (collected output text, exit code). Exit code is -1 on timeout.
-        """
-        ws_url = self._ws_url(path)
-        lines: list[str] = []
-        exit_code = -1
-
-        logger.debug("WS %s: connecting (timeout=%.1fs)", path, timeout)
-        try:
-            async with websockets.connect(
-                ws_url,
-                additional_headers=self._ws_auth_header,
-            ) as ws:
-                await ws.send(json.dumps(message))
-                logger.debug("WS %s: sent %r", path, message)
-
-                try:
-                    async with asyncio.timeout(timeout):
-                        async for raw_msg in ws:
-                            msg = json.loads(raw_msg)
-                            if msg.get("event") == "line":
-                                data = msg.get("data", "")
-                                lines.append(data)
-                                if done_pattern and done_pattern in data:
-                                    exit_code = 0
-                                    logger.debug(
-                                        "WS %s: done pattern matched: %r",
-                                        path,
-                                        done_pattern,
-                                    )
-                                    break
-                            elif msg.get("event") == "exit":
-                                exit_code = msg.get("code", -1)
-                                logger.debug("WS %s: exited with code %s", path, exit_code)
-                                break
-                except TimeoutError:
-                    logger.debug(
-                        "WS %s: timed out after %.1fs (%d lines)", path, timeout, len(lines)
-                    )
-        except (websockets.exceptions.WebSocketException, OSError) as e:
-            if lines:
-                logger.warning("WS %s: closed with %d lines collected: %s", path, len(lines), e)
-                lines.append(f"\n[Connection closed: {e}]")
-            else:
-                logger.error("WS %s: connection failed: %s", path, e)
-                raise
-
-        logger.debug("WS %s: collected %d lines", path, len(lines))
-        return "\n".join(lines), exit_code
-
-    async def get_logs(self, filename: str, duration: float = 10.0) -> str:
-        """Connect to the logs WebSocket and collect output for a duration.
-
-        Args:
-            filename: The device configuration filename.
-            duration: Seconds to collect logs (default 10).
-
-        Returns:
-            Collected log lines joined by newlines.
-        """
-        logger.debug("Fetching logs for %s (duration=%.1fs)", filename, duration)
-        output, _exit_code = await self._ws_spawn(
-            "/logs",
-            {"type": "spawn", "configuration": filename, "port": "OTA"},
-            timeout=duration,
-        )
-        return output
+        result = await self._send("devices/get_config", {"configuration": filename})
+        if not isinstance(result, str):
+            raise DashboardError(f"Unexpected get_config result type: {type(result).__name__}")
+        logger.debug("get_config %s -> %d bytes", filename, len(result))
+        return result
 
     async def save_configuration(self, filename: str, yaml_content: str) -> None:
-        """Save a YAML configuration file to the dashboard.
-
-        Args:
-            filename: The configuration filename (e.g. "bike-outlet.yaml").
-            yaml_content: The complete YAML content to save.
-        """
+        """Save a device's YAML configuration via ``devices/update_config``."""
         if not filename.endswith((".yaml", ".yml")):
             raise ValueError(f"Invalid configuration filename: {filename}")
-        logger.debug("POST /edit?configuration=%s (%d bytes)", filename, len(yaml_content))
-        async with self._http_client() as client:
-            resp = await client.post(
-                "/edit",
-                params={"configuration": filename},
-                content=yaml_content.encode("utf-8"),
-            )
-            resp.raise_for_status()
-        logger.info("Saved configuration %s", filename)
+        await self._send(
+            "devices/update_config",
+            {"configuration": filename, "content": yaml_content},
+        )
+        logger.info("Saved configuration %s (%d bytes)", filename, len(yaml_content))
 
-    async def validate_configuration(
-        self, filename: str, timeout: float = 120.0
+    @staticmethod
+    def _format_validation(result: dict[str, Any]) -> tuple[str, int]:
+        yaml_errors = result.get("yaml_errors") or []
+        validation_errors = result.get("validation_errors") or []
+        if not yaml_errors and not validation_errors:
+            return "Configuration is valid.", 0
+
+        parts: list[str] = []
+        for e in yaml_errors:
+            msg = e.get("message", e) if isinstance(e, dict) else e
+            parts.append(f"YAML error: {msg}")
+        for e in validation_errors:
+            if isinstance(e, dict):
+                rng = e.get("range") or {}
+                loc = ""
+                if "start_line" in rng:
+                    loc = f" (line {rng['start_line']}, col {rng.get('start_col', '?')})"
+                parts.append(f"Validation error{loc}: {e.get('message', e)}")
+            else:
+                parts.append(f"Validation error: {e}")
+        return "\n".join(parts), 1
+
+    async def validate_yaml(
+        self, filename: str, yaml_content: str, timeout: float = 60.0
     ) -> tuple[str, int]:
-        """Validate a device configuration via the dashboard.
+        """Validate YAML content via ``editor/validate_yaml`` (full ESPHome validation).
 
-        Args:
-            filename: The configuration filename.
-            timeout: Maximum seconds to wait (default 120).
-
-        Returns:
-            Tuple of (validation output, exit code). Exit code 0 means valid.
+        Returns (human-readable output, exit_code) where exit_code 0 means valid.
         """
-        logger.info("Validating configuration %s", filename)
-        return await self._ws_spawn(
-            "/validate",
-            {"type": "spawn", "configuration": filename},
+        result = await self._send(
+            "editor/validate_yaml",
+            {"configuration": filename, "content": yaml_content},
             timeout=timeout,
         )
+        if not isinstance(result, dict):
+            raise DashboardError(f"Unexpected validate result: {str(result)[:200]}")
+        return self._format_validation(result)
 
-    async def run_configuration(self, filename: str, timeout: float = 600.0) -> tuple[str, int]:
-        """Compile and upload a configuration to a device via OTA.
+    async def validate_configuration(self, filename: str, timeout: float = 60.0) -> tuple[str, int]:
+        """Validate a device's currently-saved configuration."""
+        content = await self.get_configuration(filename)
+        return await self.validate_yaml(filename, content, timeout=timeout)
 
-        Uses the /run endpoint which compiles the firmware first, then uploads it.
+    async def get_logs(self, filename: str, duration: float = 10.0) -> str:
+        """Stream device logs for ``duration`` seconds via ``devices/logs``."""
+        await self._connect()
+        mid = self._next_id()
+        lines: list[str] = []
+        done: asyncio.Future[Any] = asyncio.get_event_loop().create_future()
+        self._streams[str(mid)] = {"on_line": lines.append, "done": done}
+        await self._ws.send(
+            json.dumps(
+                {
+                    "command": "devices/logs",
+                    "message_id": mid,
+                    "args": {"configuration": filename, "port": "OTA"},
+                }
+            )
+        )
+        try:
+            # Logs stream until stopped; bound it by duration. An early result/error
+            # (e.g. device offline) resolves/raises sooner — we still return what we have.
+            await asyncio.wait_for(done, timeout=duration)
+        except (TimeoutError, DashboardError, ConnectionError):
+            pass
+        finally:
+            self._streams.pop(str(mid), None)
+            with contextlib.suppress(Exception):
+                await self._ws.send(
+                    json.dumps(
+                        {
+                            "command": "devices/stop_stream",
+                            "message_id": self._next_id(),
+                            "args": {"stream_id": mid},
+                        }
+                    )
+                )
+        return _strip_ansi("".join(lines))
 
-        Args:
-            filename: The configuration filename.
-            timeout: Maximum seconds to wait (default 600).
+    async def compile_configuration(
+        self,
+        filename: str,
+        on_line: Callable[[str], None] | None = None,
+        timeout: float = 1200.0,
+    ) -> tuple[str, int]:
+        """Compile a device's firmware via ``firmware/compile`` (no flash)."""
+        logger.info("Compiling %s", filename)
+        return await self._follow_job(
+            "firmware/compile", {"configuration": filename}, on_line=on_line, timeout=timeout
+        )
 
-        Returns:
-            Tuple of (compile/upload output, exit code). Exit code 0 means success.
-        """
-        logger.info("Running configuration %s (compile + upload)", filename)
-        return await self._ws_spawn(
-            "/run",
-            {"type": "spawn", "configuration": filename, "port": "OTA"},
+    async def install_configuration(
+        self,
+        filename: str,
+        port: str = "OTA",
+        on_line: Callable[[str], None] | None = None,
+        timeout: float = 1800.0,
+    ) -> tuple[str, int]:
+        """Compile and flash a device via ``firmware/install`` (OTA by default)."""
+        logger.info("Installing %s (port=%s)", filename, port)
+        return await self._follow_job(
+            "firmware/install",
+            {"configuration": filename, "port": port, "force_local": False},
+            on_line=on_line,
             timeout=timeout,
-            done_pattern="OTA successful",
         )
 
 
@@ -268,15 +473,7 @@ async def validate_local_configuration(path: str, timeout: float = 120.0) -> tup
     ``!secret`` references are resolved relative to the file's directory, as with
     the ``esphome`` CLI.
 
-    Args:
-        path: Path to a local ESPHome YAML configuration file.
-        timeout: Maximum seconds to wait for validation (default 120).
-
-    Returns:
-        Tuple of (validation output, exit code). Exit code 0 means valid.
-
-    Raises:
-        FileNotFoundError: If the path does not point to an existing file.
+    Returns (validation output, exit code). Exit code 0 means valid.
     """
     config_path = Path(path)
     if not config_path.is_file():
@@ -312,16 +509,7 @@ _schema_cache: dict[str, dict[str, str]] = {}
 
 
 async def fetch_schema(version: str, component: str | None = None) -> dict[str, str] | str:
-    """Fetch and cache the ESPHome schema for a given version.
-
-    Args:
-        version: ESPHome version (e.g. "2026.3.0").
-        component: Optional component name to return a single schema.
-
-    Returns:
-        If component is specified, returns the JSON string for that component.
-        Otherwise returns a dict mapping component names to JSON strings.
-    """
+    """Fetch and cache the ESPHome schema for a given version."""
     if version not in _schema_cache:
         url = SCHEMA_URL_TEMPLATE.format(version=version)
         logger.info("Downloading ESPHome schema for version %s", version)
@@ -333,7 +521,6 @@ async def fetch_schema(version: str, component: str | None = None) -> dict[str, 
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
             for name in zf.namelist():
                 if name.endswith(".json"):
-                    # Strip "schema/" prefix and ".json" suffix
                     component_name = name.rsplit("/", 1)[-1].removesuffix(".json")
                     schemas[component_name] = zf.read(name).decode()
 

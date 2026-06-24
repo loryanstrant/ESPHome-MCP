@@ -1,0 +1,19 @@
+name: esphome-mcp
+
+services:
+  esphome-mcp:
+    # For local development, build from source:
+    build: .
+    # In production, prefer the published image (uncomment and pin a tag):
+    # image: ghcr.io/loryans/esphome-mcp:latest
+    container_name: esphome-mcp
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3

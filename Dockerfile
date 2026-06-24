@@ -1,4 +1,5 @@
-FROM python:3.13-slim
+# Pinned by digest for reproducible builds (python:3.13-slim).
+FROM python:3.13-slim@sha256:aec3f1588bdda76cde971575692e33d11bf83a2bcaa2e1c315c47de6f72ee21a
 
 WORKDIR /app
 

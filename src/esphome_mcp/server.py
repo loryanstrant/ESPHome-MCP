@@ -126,7 +126,7 @@ async def list_devices() -> str:
         address = d.get("address", "n/a")
         platform = d.get("target_platform", "n/a")
 
-        status = d.get("status", "unknown")
+        status = d.get("state") or d.get("status", "unknown")
 
         lines.append(
             f"- {name}\n"
@@ -244,7 +244,7 @@ async def get_device_status(device_name: str) -> str:
 
     device = result
     name = device.get("friendly_name") or device.get("name", "unknown")
-    status = device.get("status", "unknown")
+    status = device.get("state") or device.get("status", "unknown")
     address = device.get("address", "n/a")
 
     logger.info("Device %r status=%s address=%s", name, status, address)
@@ -385,8 +385,7 @@ async def get_device_configuration(device_name: str, output_path: str | None = N
             len(yaml_content),
         )
         return (
-            f"Configuration for {device_name} written to {output_path} "
-            f"({len(yaml_content)} bytes)."
+            f"Configuration for {device_name} written to {output_path} ({len(yaml_content)} bytes)."
         )
 
     logger.info("Returned configuration for %r (%d bytes)", device_name, len(yaml_content))
@@ -498,9 +497,7 @@ async def validate_device_configuration(device_or_path: str) -> str:
             return f"Error validating configuration: {e}"
 
         status = "VALID" if exit_code == 0 else "INVALID"
-        logger.info(
-            "Local validation for %r: %s (exit_code=%d)", device_or_path, status, exit_code
-        )
+        logger.info("Local validation for %r: %s (exit_code=%d)", device_or_path, status, exit_code)
         return f"Validation result: {status}\n\n{output}"
 
     # Treat the argument as a device name and validate the saved dashboard config.
@@ -632,7 +629,7 @@ async def install_device_configuration(device_name: str) -> str:
     name = device.get("friendly_name") or device.get("name", "unknown")
 
     try:
-        output, exit_code = await get_client().run_configuration(filename)
+        output, exit_code = await get_client().install_configuration(filename)
     except Exception as e:
         logger.error("Failed to install configuration for %r: %s", device_name, e)
         return f"Error installing configuration: {e}"
@@ -675,7 +672,7 @@ async def update_device(device_name: str) -> str:
     name = device.get("friendly_name") or device.get("name", "unknown")
 
     try:
-        output, exit_code = await get_client().run_configuration(filename)
+        output, exit_code = await get_client().install_configuration(filename)
     except Exception as e:
         logger.error("Failed to update device %r: %s", device_name, e)
         return f"Error updating device: {e}"
