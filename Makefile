@@ -12,7 +12,7 @@ install: venv
 	$(UV) pip install -e .
 
 install-dev: install
-	$(UV) pip install ruff ty pytest pytest-asyncio esphome pip-audit bandit
+	$(UV) pip install ruff ty==0.0.63 pytest pytest-asyncio esphome pip-audit bandit
 
 lint: install-dev
 	$(VENV)/bin/ruff check src/ tests/

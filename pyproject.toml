@@ -23,7 +23,7 @@ esphome-mcp-web = "esphome_mcp.__main__:main_web"
 [dependency-groups]
 dev = [
     "ruff>=0.15.0",
-    "ty>=0.0.20",
+    "ty==0.0.63",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
     "esphome",
