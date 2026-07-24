@@ -556,7 +556,7 @@ def get_client() -> ESPHomeClient:
     global _client
     if _client is None:
         # Fields are populated from the environment by pydantic-settings.
-        settings = _settings_override or ESPHomeSettings()  # ty: ignore[missing-argument]
+        settings = _settings_override or ESPHomeSettings()
         _client = ESPHomeClient(settings)
     return _client
 
