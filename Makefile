@@ -2,7 +2,7 @@ VENV := .venv
 PYTHON := $(VENV)/bin/python
 UV := $(VENV)/bin/uv
 
-.PHONY: venv install install-dev lint format format-check typecheck test build clean activate
+.PHONY: venv install install-dev lint format format-check typecheck test audit build clean activate
 
 venv:
 	python3 -m venv $(VENV)
@@ -12,7 +12,7 @@ install: venv
 	$(UV) pip install -e .
 
 install-dev: install
-	$(UV) pip install ruff ty pytest pytest-asyncio esphome
+	$(UV) pip install ruff ty pytest pytest-asyncio esphome pip-audit bandit
 
 lint: install-dev
 	$(VENV)/bin/ruff check src/ tests/
@@ -28,6 +28,12 @@ typecheck: install-dev
 
 test: install-dev
 	$(VENV)/bin/pytest tests/ -v
+
+audit: install
+	$(VENV)/bin/pip freeze --exclude-editable > audit-requirements.txt
+	$(UV) pip install pip-audit bandit
+	$(VENV)/bin/pip-audit -r audit-requirements.txt
+	$(VENV)/bin/bandit -ll -ii -s B104 -r src/
 
 build: install
 	$(UV) pip install build

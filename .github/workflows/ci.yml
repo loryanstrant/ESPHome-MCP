@@ -40,3 +40,29 @@ jobs:
 
       - name: Test
         run: make test
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install project
+        run: pip install -e .
+
+      - name: Dependency vulnerability audit
+        run: |
+          # Audit only the project's resolved deps (pip freeze omits pip/setuptools/wheel)
+          pip freeze --exclude-editable > audit-requirements.txt
+          pip install pip-audit
+          pip-audit -r audit-requirements.txt
+
+      - name: Static security scan
+        run: |
+          pip install bandit
+          # -ll -ii: report only medium+ severity & confidence.
+          # B104 skipped: server intentionally binds 0.0.0.0 inside its container.
+          bandit -ll -ii -s B104 -r src/
