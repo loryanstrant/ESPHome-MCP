@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
+import os
+from html import escape
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import httpx
 from fastmcp import FastMCP
+from starlette.responses import HTMLResponse, Response
 
 from esphome_mcp.client import fetch_schema, get_client, validate_local_configuration
+
+if TYPE_CHECKING:
+    from starlette.requests import Request
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +78,87 @@ mcp = FastMCP(
     name="ESPHome MCP",
     instructions=INSTRUCTIONS,
 )
+
+DEFAULT_PORT = 8080
+_SUPERVISOR_ADDON_INFO_URL = "http://supervisor/addons/self/info"
+_STATUS_CHECK_TIMEOUT = 5.0
+
+
+async def _resolve_host_port(client: httpx.AsyncClient | None = None) -> int:
+    """Ask Supervisor for the current host-side port mapped to 8080/tcp.
+
+    Reflects a remap made in the add-on's Network tab. Falls back to
+    ``DEFAULT_PORT`` when not running as the add-on (no ``SUPERVISOR_TOKEN``) or
+    when the Supervisor API call fails for any reason — the status page still
+    renders, just with a possibly-stale port number.
+    """
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    if not token:
+        return DEFAULT_PORT
+
+    owns_client = client is None
+    if client is None:
+        client = httpx.AsyncClient(timeout=5)
+    try:
+        resp = await client.get(
+            _SUPERVISOR_ADDON_INFO_URL, headers={"Authorization": f"Bearer {token}"}
+        )
+        resp.raise_for_status()
+        mapped = resp.json().get("data", {}).get("network", {}).get("8080/tcp")
+        if isinstance(mapped, int):
+            return mapped
+    except Exception as e:
+        logger.warning("Could not resolve add-on host port from Supervisor: %s", e)
+    finally:
+        if owns_client:
+            await client.aclose()
+    return DEFAULT_PORT
+
+
+async def _check_dashboard_status() -> str:
+    """Quick, bounded connectivity check for the status page.
+
+    Independent of the app's general 30s HTTP timeout (used for real
+    operations) -- this page's whole job is a fast diagnostic glance, so it
+    must render promptly even when the dashboard is slow or unreachable
+    rather than hanging for as long as a real request would.
+    """
+    try:
+        version = await asyncio.wait_for(get_client().get_version(), timeout=_STATUS_CHECK_TIMEOUT)
+        return f"connected (ESPHome {escape(version)})"
+    except TimeoutError:
+        return f"unreachable (timed out after {_STATUS_CHECK_TIMEOUT:.0f}s)"
+    except Exception as e:
+        return f"unreachable ({escape(str(e))})"
+
+
+@mcp.custom_route("/", methods=["GET"])
+async def status_page(request: Request) -> Response:
+    """Ingress-served status page: dashboard connectivity + MCP connect instructions.
+
+    Not the MCP endpoint itself (that's mounted separately, at MCP_PATH) — HA
+    ingress requires an authenticated HA session, which most MCP clients can't do.
+    Safe to show the live secret path here precisely because ingress *is*
+    authenticated, unlike add-on logs.
+    """
+    dashboard_status = await _check_dashboard_status()
+    port = await _resolve_host_port()
+    mcp_path = escape(os.environ.get("MCP_PATH", "/mcp"))
+
+    html = f"""<!doctype html>
+<html>
+<head><title>ESPHome MCP</title></head>
+<body>
+<h1>ESPHome MCP</h1>
+<p>Dashboard: {dashboard_status}</p>
+<h2>Connect your MCP client</h2>
+<pre>http://&lt;your-home-assistant-ip-or-hostname&gt;:{port}{mcp_path}</pre>
+<p>Replace <code>&lt;your-home-assistant-ip-or-hostname&gt;</code> with the address
+you use to reach Home Assistant itself (same host, without the :8123) &mdash; this
+add-on listens on a separate port from the main HA web UI.</p>
+</body>
+</html>"""
+    return HTMLResponse(html)
 
 
 async def _resolve_device(device_name: str) -> dict[str, Any] | str:
