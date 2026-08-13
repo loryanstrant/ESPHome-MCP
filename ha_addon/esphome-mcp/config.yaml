@@ -1,0 +1,50 @@
+name: "ESPHome MCP"
+description: "MCP server for the ESPHome 2026.6+ Device Builder dashboard"
+version: "2026.06.0"
+slug: "esphome-mcp"
+url: "https://github.com/loryanstrant/esphome-mcp"
+arch:
+  - amd64
+  - aarch64
+startup: services
+boot: auto
+# Read-only Supervisor self-info lookup, used for the status page's port and to
+# reset regenerate_secret_path back to false after honoring it. Both are
+# /addons/self/* endpoints.
+hassio_api: true
+# Reuses the same multi-arch image CI already publishes on release.
+image: "ghcr.io/loryanstrant/esphome-mcp"
+# The status/instructions page (dashboard connectivity + MCP connect URL).
+# The MCP endpoint itself is NOT served over ingress -- ingress requires an
+# authenticated HA session, which MCP clients can't do. See ports below.
+ingress: true
+ingress_port: 8080
+panel_icon: mdi:chip
+ports:
+  8080/tcp: 8080
+ports_description:
+  8080/tcp: "MCP Streamable HTTP endpoint for MCP clients (Claude, etc.)"
+options:
+  # Correct out of the box for the common case: ESPHome Device Builder
+  # co-located on this same HA host. There's no way to detect this for real
+  # (Supervisor's discovery API is Home Assistant Core-only, not usable by
+  # other add-ons) -- this is a default guess, not auto-discovery. Change it
+  # if your dashboard runs elsewhere.
+  dashboard_url: "http://homeassistant.local:6052"
+  dashboard_username: ""
+  dashboard_password: ""
+  log_level: "info"
+  secret_path: ""
+  regenerate_secret_path: false
+schema:
+  # Plain str?, not url? -- Supervisor's "url" format rejects an empty string
+  # even as optional. The default below is non-empty, but a user can still
+  # clear the field to "", so url? would reintroduce the same save failure.
+  # The app itself validates it properly at connect time and retries/exits
+  # with a clear error if it's unset/invalid.
+  dashboard_url: "str?"
+  dashboard_username: "str?"
+  dashboard_password: "password?"
+  log_level: "list(debug|info|warning|error)"
+  secret_path: "str?"
+  regenerate_secret_path: "bool?"

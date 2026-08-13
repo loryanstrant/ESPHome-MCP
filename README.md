@@ -61,6 +61,17 @@ Once the registry image is published, pin it in `compose.yaml`:
 image: ghcr.io/loryanstrant/esphome-mcp:latest
 ```
 
+## Run as a Home Assistant App
+
+Prefer to run it as a Home Assistant Supervisor add-on — shown in the UI as an
+"App" since Home Assistant 2026.2 — with a sidebar status page and no manual
+env-var setup? Add `https://github.com/loryanstrant/esphome-mcp` as a
+repository (**Settings → Apps → Install app → ⋮ → Repositories**), install
+**ESPHome MCP**, and configure it entirely from its **Configuration** tab — no
+YAML editing. See [`ha_addon/esphome-mcp/DOCS.md`](ha_addon/esphome-mcp/DOCS.md)
+for full setup and how to connect an MCP client (it secures the endpoint with a
+per-install secret path instead of a fixed `/mcp`).
+
 ## Connect an MCP client
 
 Point your client at the Streamable HTTP endpoint:
@@ -84,6 +95,11 @@ make check         # lint + format-check + typecheck + test
 # live tests against a real 2026.6 dashboard:
 ESPHOME_DASHBOARD_URL=https://esphome.example.com .venv/bin/pytest -m live
 ```
+
+**Releasing:** the release workflow builds and pushes the multi-arch image the
+add-on points at, but doesn't touch the add-on manifest — bump `version` in
+[`ha_addon/esphome-mcp/config.yaml`](ha_addon/esphome-mcp/config.yaml) to match
+the new tag before pushing it, so Supervisor's update check picks it up.
 
 ## Credits
 

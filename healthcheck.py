@@ -8,11 +8,20 @@ tool works — unlike a bare TCP/HTTP probe.
 """
 
 import json
+import os
 import sys
 
 import httpx
 
-URL = "http://localhost:8080/mcp"
+
+def _mcp_url() -> str:
+    """The MCP endpoint URL, honoring MCP_PATH (set by the HA add-on to a
+    per-install secret path). Defaults to /mcp, matching plain Docker usage."""
+    path = os.environ.get("MCP_PATH", "/mcp")
+    return f"http://localhost:8080{path}"
+
+
+URL = _mcp_url()
 HEADERS = {
     "Accept": "application/json, text/event-stream",
     "Content-Type": "application/json",
