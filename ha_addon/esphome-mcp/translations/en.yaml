@@ -1,0 +1,33 @@
+configuration:
+  dashboard_url:
+    name: "ESPHome dashboard URL"
+    description: >-
+      Base URL of your ESPHome Device Builder dashboard. Defaults to the
+      common setup where it runs on this same Home Assistant host
+      (http://homeassistant.local:6052) -- change this if yours runs
+      elsewhere.
+  dashboard_username:
+    name: "Dashboard username (optional)"
+    description: >-
+      Only needed if your ESPHome dashboard has Basic Auth enabled. Leave
+      blank otherwise -- most installs don't need this.
+  dashboard_password:
+    name: "Dashboard password (optional)"
+    description: >-
+      Only needed if your ESPHome dashboard has Basic Auth enabled. Leave
+      blank otherwise -- most installs don't need this.
+  log_level:
+    name: "Log level"
+    description: "Verbosity of this add-on's own logs."
+  secret_path:
+    name: "Secret path override (optional)"
+    description: >-
+      Pin the MCP endpoint's URL path instead of using the auto-generated,
+      high-entropy one. Must start with / and be at least 8 characters.
+      Leave blank to let the add-on generate and persist one for you.
+  regenerate_secret_path:
+    name: "Regenerate secret path"
+    description: >-
+      Turn on and restart to force a fresh secret path (e.g. if the old one
+      leaked). Automatically switches back off afterward, so it won't
+      regenerate again on every restart.
