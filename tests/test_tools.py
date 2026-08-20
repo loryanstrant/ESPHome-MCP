@@ -342,3 +342,84 @@ def test_unsupported_passes_other_errors_through():
 
     assert server._unsupported(DashboardError("boom", "not_found"), "x", "y") is None
     assert server._unsupported(RuntimeError("boom"), "x", "y") is None
+
+
+# ------------------------------------------------------------------ yaml diff
+
+
+def test_apply_yaml_diff_replaces_the_line_not_duplicates_it():
+    """The real ha-vpe case: an off-by-one leaves both spellings and fails validation."""
+    content = "light:\n  - platform: esp32_rmt_led_strip\n    rgb_order: GRB\n    num_leds: 12\n"
+    out = server._apply_yaml_diff(
+        content, {"fromLine": 3, "toLine": 3, "replacement": "    channel_colors: GRB"}
+    )
+    assert "channel_colors: GRB" in out
+    assert "rgb_order" not in out, "old spelling survived — this is the off-by-one"
+    assert out.splitlines() == [
+        "light:",
+        "  - platform: esp32_rmt_led_strip",
+        "    channel_colors: GRB",
+        "    num_leds: 12",
+    ]
+
+
+def test_apply_yaml_diff_multi_line_range():
+    content = "a\nb\nc\nd\ne\n"
+    assert (
+        server._apply_yaml_diff(content, {"fromLine": 2, "toLine": 4, "replacement": "X\nY"})
+        == "a\nX\nY\ne\n"
+    )
+
+
+def test_apply_yaml_diff_pure_insert():
+    """toLine == fromLine - 1 inserts before fromLine without replacing anything."""
+    content = "a\nb\nc\n"
+    assert (
+        server._apply_yaml_diff(content, {"fromLine": 2, "toLine": 1, "replacement": "NEW"})
+        == "a\nNEW\nb\nc\n"
+    )
+
+
+def test_apply_yaml_diff_strips_one_trailing_newline():
+    content = "a\nb\nc\n"
+    assert (
+        server._apply_yaml_diff(content, {"fromLine": 2, "toLine": 2, "replacement": "X\n"})
+        == "a\nX\nc\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "diff",
+    [
+        {"fromLine": 0, "toLine": 1, "replacement": "x"},
+        {"fromLine": 2, "toLine": 99, "replacement": "x"},
+        {"fromLine": 5, "toLine": 3, "replacement": "x"},
+        {"fromLine": "2", "toLine": 2, "replacement": "x"},
+    ],
+)
+def test_apply_yaml_diff_rejects_bad_ranges(diff):
+    with pytest.raises(ValueError):
+        server._apply_yaml_diff("a\nb\nc\n", diff)
+
+
+def test_format_migration_change_is_readable():
+    out = server._format_migration_change(
+        {
+            "kind": "fold",
+            "scope": "light.esp32_rmt_led_strip",
+            "old": "rgb_order",
+            "new": "channel_colors",
+            "since": "2026.8.0",
+            "required": False,
+        }
+    )
+    assert "light.esp32_rmt_led_strip: rgb_order -> channel_colors" in out
+    assert "fold" in out and "since 2026.8.0" in out
+    assert out != "- fold"
+
+
+def test_format_migration_change_flags_required():
+    out = server._format_migration_change(
+        {"kind": "key", "scope": "api", "old": "services", "new": "actions", "required": True}
+    )
+    assert "REQUIRED" in out

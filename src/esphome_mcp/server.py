@@ -107,6 +107,67 @@ def _unsupported(exc: Exception, feature: str, since: str) -> str | None:
     )
 
 
+def _format_migration_change(change: Any) -> str:
+    """Render one ``MigrationChange`` from ``editor/migrate_config``.
+
+    Fields are ``kind`` (``key`` / ``field`` / ``fold`` / ``convert`` / ``action``),
+    ``scope``, ``old``, ``new``, and optionally ``since`` / ``removed_in`` /
+    ``required``. ``required`` means the installed ESPHome already rejects the old
+    spelling, so it is not merely tidy-up.
+    """
+    if not isinstance(change, dict):
+        return str(change)
+
+    old, new = change.get("old", ""), change.get("new", "")
+    text = f"{old} -> {new}" if old and new else (new or old or change.get("kind", "change"))
+    if scope := change.get("scope"):
+        text = f"{scope}: {text}"
+
+    notes = []
+    if kind := change.get("kind"):
+        notes.append(kind)
+    if since := change.get("since"):
+        notes.append(f"since {since}")
+    if removed_in := change.get("removed_in"):
+        notes.append(f"removed in {removed_in}")
+    if change.get("required"):
+        notes.append("REQUIRED — the installed ESPHome rejects the old spelling")
+    return text + (f" ({', '.join(notes)})" if notes else "")
+
+
+def _apply_yaml_diff(content: str, diff: dict[str, Any]) -> str:
+    """Apply a ``YamlDiff`` splice to ``content``.
+
+    ``fromLine`` / ``toLine`` are **1-indexed line numbers in the old text**, and the
+    dashboard's own splice is ``lines[fromLine - 1 : toLine]`` replaced by
+    ``replacement``. Two shapes share that one formula:
+
+    * **replace** — ``fromLine <= toLine``: that inclusive line range is replaced.
+    * **pure insert** — ``toLine == fromLine - 1``: nothing is replaced and
+      ``replacement`` lands before ``fromLine``.
+
+    Getting the off-by-one wrong does not fail loudly — it leaves the old line in
+    place *next to* its replacement, which the dashboard then rejects with e.g.
+    "'channel_colors' cannot be combined with 'rgb_order'".
+    """
+    from_line = diff.get("fromLine")
+    to_line = diff.get("toLine")
+    replacement = diff.get("replacement", "")
+    if not isinstance(from_line, int) or not isinstance(to_line, int):
+        raise ValueError(f"non-integer line range: fromLine={from_line!r} toLine={to_line!r}")
+
+    lines = content.split("\n")
+    if from_line < 1 or to_line < from_line - 1 or to_line > len(lines):
+        raise ValueError(
+            f"line range {from_line}-{to_line} is outside the {len(lines)}-line configuration"
+        )
+
+    # Trailing newline on the replacement would otherwise introduce a blank line,
+    # since the surrounding lines are already newline-separated by the join.
+    body = replacement[:-1] if replacement.endswith("\n") else replacement
+    return "\n".join([*lines[: from_line - 1], *body.split("\n"), *lines[to_line:]])
+
+
 async def _resolve_device(device_name: str) -> dict[str, Any] | str:
     """Resolve a device name to its entry dict.
 
@@ -748,10 +809,7 @@ async def migrate_device_configuration(device_name: str, apply: bool = False) ->
         logger.info("Migration for %r: nothing to do", name)
         return f"{name}: no migration needed — the configuration already uses current spellings."
 
-    summary = "\n".join(
-        f"- {c.get('description') or c.get('kind') or c}" if isinstance(c, dict) else f"- {c}"
-        for c in changes
-    )
+    summary = "\n".join(f"- {_format_migration_change(c)}" for c in changes)
     replacement = diff.get("replacement", "")
     detail = (
         f"Lines {diff.get('fromLine')}-{diff.get('toLine')} would be replaced with:\n\n"
@@ -766,12 +824,11 @@ async def migrate_device_configuration(device_name: str, apply: bool = False) ->
             f"Re-run with apply=True to save, then validate and install."
         )
 
-    lines = content.splitlines(keepends=True)
-    from_line = diff.get("fromLine")
-    to_line = diff.get("toLine")
-    if not isinstance(from_line, int) or not isinstance(to_line, int):
-        return f"Error: dashboard returned an unusable diff range for {name}: {diff!r}"
-    migrated = "".join(lines[:from_line]) + replacement + "".join(lines[to_line:])
+    try:
+        migrated = _apply_yaml_diff(content, diff)
+    except ValueError as e:
+        logger.error("Unusable diff range for %r: %s", device_name, e)
+        return f"Error: dashboard returned an unusable diff for {name}: {e}"
 
     try:
         await client.save_configuration(filename, migrated)
