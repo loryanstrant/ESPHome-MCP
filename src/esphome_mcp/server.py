@@ -7,7 +7,13 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from esphome_mcp.client import fetch_schema, get_client, validate_local_configuration
+from esphome_mcp.client import (
+    InstallOutcome,
+    fetch_schema,
+    get_client,
+    runtime_field,
+    validate_local_configuration,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +36,12 @@ before passing it to any other tool.
 a local file with `output_path`
    - `get_device_logs` — stream recent logs (default 10s, max 30s). \
 The device must be online for logs to be available.
+   - `search_device_configurations` — search every device's YAML for a string, \
+to answer "which devices use X?" without reading each config
+   - `troubleshoot_device` — live connectivity probe (DNS, mDNS, ping) when a \
+device shows as offline
+   - `decode_device_backtrace` — turn a crash backtrace from the logs into \
+source locations
 
 3. To look up ESPHome configuration schema:
    - `get_esphome_schema(version)` — list available components for a version
@@ -51,7 +63,11 @@ config, or with a local YAML file path to validate that file
 
 6. To update a device to the latest ESPHome version:
    - Check for updates with `check_device_update`
-   - If an update is available, use `update_device` to recompile and flash
+   - ESPHome renames configuration keys between releases. If `list_devices` or \
+`check_device_update` reports a migration is available, run \
+`migrate_device_configuration` (a dry run by default) and apply it **before** \
+installing — otherwise the compile may fail on legacy spellings
+   - Then use `update_device` to recompile and flash
 
 ## ESPHome documentation
 - Components: https://esphome.io/components/
@@ -63,13 +79,32 @@ config, or with a local YAML file path to validate that file
 - Device names are the ESPHome `name` field (e.g. "bike-outlet"), not the friendly name.
 - If a tool returns "not found", re-check the name with `list_device_names`.
 - `install_device_configuration` and `update_device` are destructive — they compile and \
-flash firmware to a physical device. The device must be online for OTA upload.
+flash firmware to a physical device. If the device is offline, the dashboard compiles the \
+firmware and arms it to flash on the device's next check-in; the tool reports that as \
+"FLASH DEFERRED" rather than success.
+- A device's status and deployed version are observed over the network (mDNS/ping), so \
+they read as "unknown" for a device the dashboard has not seen yet, even if it is fine.
 """
 
 mcp = FastMCP(
     name="ESPHome MCP",
     instructions=INSTRUCTIONS,
 )
+
+
+def _unsupported(exc: Exception, feature: str, since: str) -> str | None:
+    """Turn the dashboard's ``unknown_command`` into a version explanation.
+
+    The Device Builder ships on its own release cadence, so a dashboard can be
+    perfectly healthy and simply predate a command. Say which version added it
+    rather than surfacing a bare "Unknown command".
+    """
+    if getattr(exc, "error_code", None) != "unknown_command":
+        return None
+    return (
+        f"This ESPHome dashboard does not support {feature} — it was added in "
+        f"{since}. Upgrade the dashboard to use this tool."
+    )
 
 
 async def _resolve_device(device_name: str) -> dict[str, Any] | str:
@@ -121,14 +156,23 @@ async def list_devices() -> str:
     for d in devices:
         name = d.get("friendly_name") or d.get("name", "unknown")
         config = d.get("configuration", "")
-        deployed = d.get("deployed_version", "n/a")
-        current = d.get("current_version", "n/a")
-        address = d.get("address", "n/a")
-        platform = d.get("target_platform", "n/a")
+        deployed = runtime_field(d, "deployed_version") or "n/a"
+        current = d.get("current_version") or "n/a"
+        address = d.get("address") or "n/a"
+        platform = d.get("target_platform") or "n/a"
+        status = runtime_field(d, "state") or "unknown"
 
-        status = d.get("state") or d.get("status", "unknown")
+        # Flags the dashboard computes itself — more reliable than comparing
+        # version strings, and the only source for the migration hint.
+        flags = []
+        if d.get("update_available"):
+            flags.append("ESPHome update available")
+        if d.get("has_pending_changes"):
+            flags.append("config changed since last compile")
+        if d.get("migration_available"):
+            flags.append("YAML migration available")
 
-        lines.append(
+        entry = (
             f"- {name}\n"
             f"  Config: {config}\n"
             f"  Status: {status}\n"
@@ -137,6 +181,9 @@ async def list_devices() -> str:
             f"  Address: {address}\n"
             f"  Platform: {platform}"
         )
+        if flags:
+            entry += f"\n  Flags: {'; '.join(flags)}"
+        lines.append(entry)
 
     version = "unknown"
     with contextlib.suppress(Exception):
@@ -197,23 +244,34 @@ async def check_device_update(device_name: str) -> str:
 
     device = result
     name = device.get("friendly_name") or device.get("name", "unknown")
-    deployed = device.get("deployed_version", "")
+    deployed = runtime_field(device, "deployed_version")
     current = device.get("current_version", "")
+
+    # The dashboard's own verdict: compiled against an older ESPHome than the
+    # server runs. It distinguishes that from "compiled but not yet flashed",
+    # which a deployed-vs-current string compare cannot.
+    if device.get("update_available"):
+        detail = f" Running {deployed}, latest is {current}." if deployed and current else ""
+        logger.info("Device %r: update available (%s -> %s)", name, deployed, current)
+        return f"{name}: Update available!{detail}"
+
+    extra = []
+    if device.get("has_pending_changes"):
+        extra.append("its config has changed since the last compile — install to apply")
+    if device.get("migration_available"):
+        extra.append("its YAML uses legacy spellings — run migrate_device_configuration")
+    suffix = f" Note: {'; '.join(extra)}." if extra else ""
 
     if not deployed:
         logger.info("Device %r has no deployed version", name)
-        return f"{name}: No deployed version found. The device may not have been flashed yet."
-
-    if not current:
-        logger.info("Device %r: cannot determine available version", name)
-        return f"{name}: Running version {deployed}. Unable to determine if an update is available."
-
-    if deployed != current:
-        logger.info("Device %r: update available %s -> %s", name, deployed, current)
-        return f"{name}: Update available! Running {deployed}, latest is {current}."
+        return (
+            f"{name}: Up to date on ESPHome version, but no deployed version is known "
+            f"— the device may not have been flashed yet, or has not been seen on the "
+            f"network since the dashboard started.{suffix}"
+        )
 
     logger.info("Device %r: up to date at %s", name, deployed)
-    return f"{name}: Up to date at version {deployed}."
+    return f"{name}: Up to date at version {deployed}.{suffix}"
 
 
 @mcp.tool(
@@ -244,11 +302,23 @@ async def get_device_status(device_name: str) -> str:
 
     device = result
     name = device.get("friendly_name") or device.get("name", "unknown")
-    status = device.get("state") or device.get("status", "unknown")
-    address = device.get("address", "n/a")
+    status = runtime_field(device, "state") or "unknown"
+    address = device.get("address") or "n/a"
+    ips = runtime_field(device, "ip_addresses", []) or []
+    source = runtime_field(device, "active_source")
 
-    logger.info("Device %r status=%s address=%s", name, status, address)
-    return f"{name}: {status} (address: {address})"
+    detail = f"(address: {address}"
+    if ips:
+        detail += f", IP: {', '.join(str(ip) for ip in ips)}"
+    if source and source != "unknown":
+        detail += f", seen via: {source}"
+    detail += ")"
+
+    logger.info("Device %r status=%s address=%s ips=%s", name, status, address, ips)
+    hint = ""
+    if status != "online":
+        hint = " Use troubleshoot_device for a live connectivity probe."
+    return f"{name}: {status} {detail}{hint}"
 
 
 @mcp.tool(
@@ -277,14 +347,16 @@ async def get_device_version(device_name: str) -> str:
 
     device = result
     name = device.get("friendly_name") or device.get("name", "unknown")
-    deployed = device.get("deployed_version", "")
+    deployed = runtime_field(device, "deployed_version")
     current = device.get("current_version", "")
 
     parts: list[str] = [f"{name}:"]
     if deployed:
         parts.append(f"  Deployed version: {deployed}")
     else:
-        parts.append("  Deployed version: not yet flashed")
+        # The deployed version is monitor-observed, so "unknown" also covers a
+        # device the dashboard has not seen on the network yet.
+        parts.append("  Deployed version: unknown (not yet flashed, or not seen on the network)")
     if current:
         parts.append(f"  Current version: {current}")
 
@@ -457,6 +529,30 @@ async def _resolve_filename(device_name: str) -> tuple[dict[str, Any], str] | st
     return result, filename
 
 
+def _format_install_outcome(action: str, name: str, outcome: InstallOutcome) -> str:
+    """Report a compile+flash chain honestly.
+
+    A successful compile is not a successful flash: the OTA upload is a separate
+    job, and an offline device gets a deferred install where nothing is flashed
+    at all.
+    """
+    if outcome.deferred:
+        logger.info("%s for %r: DEFERRED (device offline)", action, name)
+        return (
+            f"{action} result for {name}: COMPILED, FLASH DEFERRED\n\n"
+            f"The device is offline, so the dashboard compiled the firmware and armed it "
+            f"to flash automatically the next time the device checks in. Nothing has been "
+            f"written to the device yet."
+        )
+    if outcome.exit_code == 0:
+        logger.info("%s for %r: SUCCESS", action, name)
+        return f"{action} result for {name}: SUCCESS (compiled and flashed)"
+
+    stage = "compile" if outcome.stage == "compile" else "OTA upload"
+    logger.info("%s for %r: FAILED at %s (exit_code=%d)", action, name, stage, outcome.exit_code)
+    return f"{action} result for {name}: FAILED during {stage}\n\n{outcome.output}"
+
+
 @mcp.tool(
     annotations={
         "readOnlyHint": True,
@@ -602,6 +698,312 @@ async def edit_device_configuration(
 @mcp.tool(
     annotations={
         "readOnlyHint": False,
+        "destructiveHint": False,
+    }
+)
+async def migrate_device_configuration(device_name: str, apply: bool = False) -> str:
+    """Bring a device's YAML up to date with the installed ESPHome's spellings.
+
+    ESPHome renames configuration keys between releases (2026.8, for example,
+    renamed `esp32_ble_id:` to `ble_hub_id:`, the sgp4x/sen5x/sen6x `voc`/`nox`
+    keys to `voc_index`/`nox_index`, and consolidated the addressable-light
+    `rgb_order`/`is_rgbw`/`is_wrgb` keys into `channel_colors`). This asks the
+    dashboard to apply every migration it knows about, in one pass.
+
+    Runs as a **dry run by default**: it reports what would change and saves
+    nothing. Call again with `apply=True` to write the migrated YAML.
+
+    Args:
+        device_name: The name of the device whose configuration to migrate.
+        apply: When True, save the migrated YAML. When False (the default),
+            only report the proposed changes.
+    """
+    logger.info("Migrating configuration for device=%r (apply=%s)", device_name, apply)
+    try:
+        resolved = await _resolve_filename(device_name)
+    except Exception as e:
+        logger.error("Failed to resolve device %r: %s", device_name, e)
+        return f"Error: {e}"
+
+    if isinstance(resolved, str):
+        return resolved
+
+    device, filename = resolved
+    name = device.get("friendly_name") or device.get("name", "unknown")
+
+    client = get_client()
+    try:
+        content = await client.get_configuration(filename)
+        result = await client.migrate_yaml(content)
+    except Exception as e:
+        logger.error("Failed to migrate %r: %s", device_name, e)
+        return (
+            _unsupported(e, "one-click config migration", "Device Builder 1.8.0 (ESPHome 2026.7)")
+            or f"Error migrating configuration: {e}"
+        )
+
+    diff = result.get("yaml_diff")
+    changes = result.get("changes") or []
+    if not diff:
+        logger.info("Migration for %r: nothing to do", name)
+        return f"{name}: no migration needed — the configuration already uses current spellings."
+
+    summary = "\n".join(
+        f"- {c.get('description') or c.get('kind') or c}" if isinstance(c, dict) else f"- {c}"
+        for c in changes
+    )
+    replacement = diff.get("replacement", "")
+    detail = (
+        f"Lines {diff.get('fromLine')}-{diff.get('toLine')} would be replaced with:\n\n"
+        f"{replacement}"
+    )
+
+    if not apply:
+        logger.info("Migration for %r: %d change(s), dry run", name, len(changes))
+        return (
+            f"{name}: {len(changes)} migration(s) available (dry run — nothing saved).\n\n"
+            f"{summary}\n\n{detail}\n\n"
+            f"Re-run with apply=True to save, then validate and install."
+        )
+
+    lines = content.splitlines(keepends=True)
+    from_line = diff.get("fromLine")
+    to_line = diff.get("toLine")
+    if not isinstance(from_line, int) or not isinstance(to_line, int):
+        return f"Error: dashboard returned an unusable diff range for {name}: {diff!r}"
+    migrated = "".join(lines[:from_line]) + replacement + "".join(lines[to_line:])
+
+    try:
+        await client.save_configuration(filename, migrated)
+        output, exit_code = await client.validate_configuration(filename)
+    except Exception as e:
+        logger.error("Failed to save/validate migrated config for %r: %s", device_name, e)
+        return f"Error saving migrated configuration: {e}"
+
+    status = "VALID" if exit_code == 0 else "INVALID"
+    logger.info("Migration for %r applied: %s", name, status)
+    return (
+        f"{name}: applied {len(changes)} migration(s).\n\n{summary}\n\n"
+        f"Validation result: {status}\n\n{output}"
+    )
+
+
+@mcp.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+    }
+)
+async def search_device_configurations(
+    query: str, context_lines: int = 2, max_results: int = 50, case_sensitive: bool = False
+) -> str:
+    """Search every device's YAML configuration for a string.
+
+    Answers "which devices use X?" in one call, instead of reading each device's
+    configuration in turn. Useful for auditing the fleet before an ESPHome upgrade
+    (e.g. searching for `rgb_order` or `esp32_ble_id` before moving to 2026.8).
+
+    Args:
+        query: Substring to search for. Not a regular expression.
+        context_lines: Lines of surrounding context per match (0-10, default 2).
+        max_results: Maximum matching lines to return overall (default 50).
+        case_sensitive: Whether the search is case sensitive (default False).
+    """
+    logger.info("Searching device configurations for %r", query)
+    if not query.strip():
+        return "Provide a non-empty search query."
+
+    try:
+        results = await get_client().search_yaml(
+            query,
+            max_results=max_results,
+            context_lines=max(0, min(10, context_lines)),
+            case_sensitive=case_sensitive,
+        )
+    except Exception as e:
+        logger.error("Failed to search configurations for %r: %s", query, e)
+        return (
+            _unsupported(e, "fleet-wide YAML search", "Device Builder 1.5.0 (ESPHome 2026.7)")
+            or f"Error searching configurations: {e}"
+        )
+
+    if not results:
+        logger.info("No matches for %r", query)
+        return f"No device configuration contains {query!r}."
+
+    blocks: list[str] = []
+    for entry in results:
+        name = entry.get("friendly_name") or entry.get("device_name") or entry.get("configuration")
+        matches = entry.get("matches") or []
+        total = entry.get("total_matches", len(matches))
+        header = f"{name} ({entry.get('configuration')})"
+        if total > len(matches):
+            # The dashboard caps matches at 5 per file — say so rather than
+            # letting the caller read a truncated list as complete.
+            header += f" — showing {len(matches)} of {total} matches"
+        lines = [header]
+        for m in matches:
+            for before in m.get("before") or []:
+                lines.append(f"      {before}")
+            lines.append(f"  {m.get('line_number')}: {m.get('line_text')}")
+            for after in m.get("after") or []:
+                lines.append(f"      {after}")
+        blocks.append("\n".join(lines))
+
+    logger.info("Found matches in %d device(s) for %r", len(results), query)
+    return f"{len(results)} device(s) match {query!r}:\n\n" + "\n\n".join(blocks)
+
+
+@mcp.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+    }
+)
+async def troubleshoot_device(device_name: str) -> str:
+    """Run a live connectivity probe against a device.
+
+    Unlike `get_device_status` (which reports the dashboard's cached view), this
+    drops the cached DNS entry and performs a fresh DNS resolve, an mDNS re-query
+    and an ICMP ping. Use it when a device shows as offline and you want to know
+    which part of the path is failing.
+
+    Args:
+        device_name: The name of the device to probe.
+    """
+    logger.info("Troubleshooting device=%r", device_name)
+    try:
+        resolved = await _resolve_filename(device_name)
+    except Exception as e:
+        logger.error("Failed to resolve device %r: %s", device_name, e)
+        return f"Error: {e}"
+
+    if isinstance(resolved, str):
+        return resolved
+
+    device, filename = resolved
+    name = device.get("friendly_name") or device.get("name", "unknown")
+
+    try:
+        r = await get_client().troubleshoot(filename)
+    except Exception as e:
+        logger.error("Failed to troubleshoot %r: %s", device_name, e)
+        return (
+            _unsupported(e, "the connectivity probe", "Device Builder 1.9.0 (ESPHome 2026.7)")
+            or f"Error running connectivity probe: {e}"
+        )
+
+    def verdict(ok: object, inconclusive: object, detail: str) -> str:
+        if inconclusive:
+            return (
+                f"inconclusive (the probe itself failed) — {detail}" if detail else "inconclusive"
+            )
+        return f"yes — {detail}" if ok else "no"
+
+    dns_addrs = ", ".join(r.get("dns_addresses") or [])
+    mdns_addrs = ", ".join(r.get("mdns_addresses") or [])
+    ping_target = r.get("ping_target") or "n/a"
+    rtt = r.get("ping_rtt_ms")
+
+    if not r.get("ping_attempted"):
+        ping = "not attempted (no target to ping)"
+    elif rtt is None:
+        ping = f"no reply from {ping_target} (source: {r.get('ping_target_source') or 'unknown'})"
+    else:
+        ping = f"{rtt} ms from {ping_target} (source: {r.get('ping_target_source') or 'unknown'})"
+
+    lines = [
+        f"Connectivity probe for {name} (address: {r.get('address') or 'n/a'}):",
+        f"  DNS resolved: {verdict(r.get('dns_resolved'), r.get('dns_inconclusive'), dns_addrs)}",
+        f"  mDNS seen: {verdict(bool(mdns_addrs), r.get('mdns_inconclusive'), mdns_addrs)}",
+        f"  Ping: {ping}",
+    ]
+    if r.get("icmp_available") is False:
+        lines.append("  Note: this dashboard cannot send ICMP, so the ping leg proves nothing.")
+    if not r.get("zeroconf_running"):
+        lines.append("  Note: mDNS discovery is not running on the dashboard.")
+    if r.get("dns_had_cached_failure"):
+        lines.append(
+            "  Note: DNS had a cached failure before this probe; the resolve above is live."
+        )
+
+    logger.info("Troubleshoot %r: ping=%s dns=%s", name, ping, r.get("dns_resolved"))
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    annotations={
+        "readOnlyHint": True,
+        "destructiveHint": False,
+    }
+)
+async def decode_device_backtrace(device_name: str, backtrace: str) -> str:
+    """Decode a crash backtrace from a device's logs into source locations.
+
+    Paste the crash region from `get_device_logs` (the lines carrying `0x...`
+    addresses). Decoding runs against the build on the dashboard's disk, so the
+    device must have been compiled there.
+
+    Args:
+        device_name: The device the crash came from.
+        backtrace: The crash log excerpt containing the backtrace addresses.
+    """
+    logger.info("Decoding backtrace for device=%r", device_name)
+    try:
+        resolved = await _resolve_filename(device_name)
+    except Exception as e:
+        logger.error("Failed to resolve device %r: %s", device_name, e)
+        return f"Error: {e}"
+
+    if isinstance(resolved, str):
+        return resolved
+
+    device, filename = resolved
+    name = device.get("friendly_name") or device.get("name", "unknown")
+
+    lines = [line for line in backtrace.splitlines() if line.strip()]
+    if not lines:
+        return "Provide the crash log lines containing the backtrace addresses."
+
+    try:
+        result = await get_client().decode_backtrace(filename, lines)
+    except Exception as e:
+        logger.error("Failed to decode backtrace for %r: %s", device_name, e)
+        return (
+            _unsupported(e, "backtrace decoding", "Device Builder 1.5.0 (ESPHome 2026.7)")
+            or f"Error decoding backtrace: {e}"
+        )
+
+    reason = result.get("unavailable_reason")
+    if reason:
+        explanation = {
+            "no_backtrace": "no address-shaped tokens were found in the text you provided",
+            "no_build": "this device has never been compiled on the dashboard, "
+            "or its build directory was wiped",
+            "elf_only": "the build's ELF is present but the decoder could not run against it",
+        }.get(reason, reason)
+        logger.info("Backtrace decode for %r unavailable: %s", name, reason)
+        return f"{name}: could not decode — {explanation}."
+
+    decoded = result.get("decoded") or []
+    if not decoded:
+        return f"{name}: the dashboard returned no decoded frames."
+
+    body = "\n".join(f"  #{d.get('index')}: {d.get('text')}" for d in decoded)
+    warning = ""
+    if result.get("stale_build"):
+        warning = (
+            "\n\nWARNING: the device is running different firmware than the build on disk "
+            "(config hashes differ), so these symbols are confident but probably wrong. "
+            "Decode against the build the device is actually running."
+        )
+    logger.info("Decoded %d frame(s) for %r", len(decoded), name)
+    return f"Decoded backtrace for {name}:\n{body}{warning}"
+
+
+@mcp.tool(
+    annotations={
+        "readOnlyHint": False,
         "destructiveHint": True,
     }
 )
@@ -629,16 +1031,12 @@ async def install_device_configuration(device_name: str) -> str:
     name = device.get("friendly_name") or device.get("name", "unknown")
 
     try:
-        output, exit_code = await get_client().install_configuration(filename)
+        outcome = await get_client().install_configuration(filename)
     except Exception as e:
         logger.error("Failed to install configuration for %r: %s", device_name, e)
         return f"Error installing configuration: {e}"
 
-    if exit_code == 0:
-        logger.info("Install for %r: SUCCESS", name)
-        return f"Install result for {name}: SUCCESS"
-    logger.info("Install for %r: FAILED (exit_code=%d)", name, exit_code)
-    return f"Install result for {name}: FAILED\n\n{output}"
+    return _format_install_outcome("Install", name, outcome)
 
 
 @mcp.tool(
@@ -672,13 +1070,9 @@ async def update_device(device_name: str) -> str:
     name = device.get("friendly_name") or device.get("name", "unknown")
 
     try:
-        output, exit_code = await get_client().install_configuration(filename)
+        outcome = await get_client().install_configuration(filename)
     except Exception as e:
         logger.error("Failed to update device %r: %s", device_name, e)
         return f"Error updating device: {e}"
 
-    if exit_code == 0:
-        logger.info("Update for %r: SUCCESS", name)
-        return f"Update result for {name}: SUCCESS"
-    logger.info("Update for %r: FAILED (exit_code=%d)", name, exit_code)
-    return f"Update result for {name}: FAILED\n\n{output}"
+    return _format_install_outcome("Update", name, outcome)

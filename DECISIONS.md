@@ -1,5 +1,65 @@
 # Decisions & lessons
 
+## 2026-08-20 — The dashboard is versioned separately, and its wire shape moved
+
+**Context.** The transport below was reverse-engineered against a dashboard reporting
+`server_version 1.0.12` / `esphome_version 2026.6.2`. Those are **two independent version
+numbers**: the Device Builder ships from its own repo,
+[`esphome/device-builder`](https://github.com/esphome/device-builder), on its own release
+cadence. ESPHome 2026.8.0 ships Device Builder **1.12.x**; a dashboard on ESPHome 2026.7.3
+reports **1.7.0**. Tracking the ESPHome changelog alone will miss dashboard-protocol changes
+entirely — 2026.8.0's changelog says nothing about either change below.
+
+That repo now publishes **`docs/API.md`** (every WebSocket command, args and response) and
+**`esphome_device_builder/models/devices.py`** (the exact `Device` wire shape). Those are the
+authoritative reference — read them instead of reverse-engineering the SPA bundle. Note
+`docs/API.md` is not exhaustive: `editor/validate_yaml` is live in `controllers/editor.py`
+but absent from the doc, so check the source before concluding a command is gone.
+
+**Two breaking changes were found already live, both silent.**
+
+1. **`Device.runtime_state` (Device Builder 1.5.0).** The monitor-observed fields — `state`,
+   `active_source`, `ip_addresses`, `deployed_version`, `deployed_config_hash`,
+   `queued_update`, `api_encryption_active`, `deployed_identity_live` — moved off the flat
+   `Device` into a nested `runtime_state` object. **There is no flat alias on the WebSocket
+   wire.** Only the deprecated legacy REST `GET /devices` still flattens it, for Home
+   Assistant's `esphome-dashboard-api`. Reading them flat returns nothing, so
+   `list_devices`, `get_device_status`, `get_device_version` and `check_device_update`
+   reported "unknown" / "not yet flashed" for *every* device — plausible-looking output, no
+   error anywhere. Handled by `runtime_field()` in `client.py`, which prefers the nested
+   value and falls back to the flat one for pre-1.5.0 dashboards.
+
+   The same reshuffle added first-class flags that are better than inferring from version
+   strings: `update_available`, `has_pending_changes` (+ `pending_changes_via_hash`) and
+   `migration_available`. `check_device_update` now uses `update_available`, which
+   distinguishes "compiled against an older ESPHome" from "compiled but not yet flashed" —
+   a `deployed != current` comparison cannot.
+
+2. **`firmware/install` returns the COMPILE job, not the install.** The OTA upload is a
+   *separate* job on a separate lane, chained via `depends_on` (`enqueue_install_chain` in
+   `controllers/firmware/factories.py`). Following only the returned job reports success as
+   soon as compilation finishes, for firmware that may never have reached the device. Worse:
+   if the device is **offline** and `port` is `"OTA"`, the dashboard queues a compile-only
+   job flagged `is_deferred_install` and arms it to flash on the device's next check-in — so
+   the old code reported `SUCCESS` for a device that was never touched. `install_configuration`
+   now returns an `InstallOutcome` carrying the upload's exit code, the failing stage, and a
+   `deferred` flag reported as "COMPILED, FLASH DEFERRED".
+
+**Lessons (reusable).**
+- **A silent shape change is worse than a broken endpoint.** The 2026.6 breakage announced
+  itself (HTML where YAML was expected); this one just returned "unknown" forever. The live
+  test `test_live_device_carries_runtime_state` pins the shape so the next one fails loudly.
+- **Version-check the dashboard, not just ESPHome.** `server_version` is in the `server_info`
+  frame we already log at INFO on connect.
+- **A queued job is not a finished job.** Where a backend splits work across a chain, follow
+  the chain — the first job's exit code is not the operation's outcome.
+
+**Commands added in this pass** (all from `docs/API.md`): `editor/migrate_config`
+(2026.8 renames a lot of keys — `esp32_ble_id:`→`ble_hub_id:`, `voc`/`nox`→`voc_index`/
+`nox_index`, `rgb_order`/`is_rgbw`/`is_wrgb`→`channel_colors`), `yaml/search`,
+`devices/troubleshoot`, `devices/decode_backtrace`. `config/version` replaces the legacy
+REST `GET /version`, which is on the dashboard's deprecated list.
+
 ## 2026-06-24 — ESPHome 2026.6 "Device Builder" replaced the dashboard API
 
 **Context.** The original `kdkavanagh/esphome-mcp` (and the `b2un0` fork that publishes
