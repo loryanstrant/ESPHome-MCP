@@ -92,8 +92,24 @@ jobs:
           name: dist
           path: dist/
 
+      # Pull this tag's section out of CHANGELOG.md so the release page leads with
+      # notes written for humans. Falls back to an empty body (leaving just the
+      # auto-generated commit list) if the tag has no section yet.
+      - name: Extract release notes
+        run: |
+          awk -v tag="${{ github.ref_name }}" '
+            $0 ~ "^## " tag " " || $0 == "## " tag { found = 1; next }
+            found && /^## / { exit }
+            found && !/^---$/ { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::warning::no CHANGELOG.md section for ${{ github.ref_name }}"
+          fi
+          cat release-notes.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: release-notes.md
           generate_release_notes: true
           files: dist/*

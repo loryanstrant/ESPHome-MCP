@@ -21,6 +21,10 @@ WebSocket command protocol.
 > protocol and falls back to the pre-1.5.0 device shape where they differ. Its protocol
 > reference is that repo's `docs/API.md` and `models/devices.py`.
 
+> **Upgrading from 2026.06.0?** On ESPHome 2026.7 or newer it reported every device as
+> `unknown` with no deployed version, and could report a successful install for firmware it
+> never flashed. Both are fixed in 2026.08.0 — see the [changelog](CHANGELOG.md).
+
 ## Tools
 
 | Tool | What it does |
