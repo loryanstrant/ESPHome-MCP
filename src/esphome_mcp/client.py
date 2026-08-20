@@ -28,7 +28,7 @@ import re
 import sys
 import zipfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlparse
 
 import httpx
@@ -45,6 +45,41 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
+
+
+def runtime_field(device: dict[str, Any], key: str, default: Any = "") -> Any:
+    """Read a monitor-observed field off a ``Device`` entry.
+
+    Device Builder **1.5.0** moved the fields the mDNS / MQTT / ping monitors
+    populate — ``state``, ``active_source``, ``ip_addresses``, ``deployed_version``,
+    ``deployed_config_hash``, ``queued_update``, ``api_encryption_active``,
+    ``deployed_identity_live`` — off the flat ``Device`` into a nested
+    ``runtime_state`` object. The WebSocket wire carries **no flat alias**; only the
+    deprecated legacy REST ``GET /devices`` still flattens it (for Home Assistant's
+    ``esphome-dashboard-api``).
+
+    Prefer the nested value, falling back to the flat one so pre-1.5.0 dashboards
+    keep working.
+    """
+    runtime = device.get("runtime_state")
+    if isinstance(runtime, dict) and key in runtime:
+        return runtime[key]
+    return device.get(key, default)
+
+
+class InstallOutcome(NamedTuple):
+    """Result of a compile+flash chain.
+
+    ``stage`` names the job the ``exit_code`` came from, so a caller can tell a
+    compile failure from a failed OTA upload. ``deferred`` is set when the device
+    was offline: the dashboard compiled the firmware and armed it to flash the next
+    time the device checks in, so nothing reached the device yet.
+    """
+
+    output: str
+    exit_code: int
+    stage: str  # "compile" | "upload"
+    deferred: bool = False
 
 
 class ESPHomeSettings(BaseSettings):
@@ -258,11 +293,27 @@ class ESPHomeClient:
         timeout: float = 1200.0,
     ) -> tuple[str, int]:
         """Start a firmware job, follow its output stream, return (output, exit_code)."""
+        job = await self._start_job(command, args)
+        output, exit_code, _final = await self._stream_job(
+            job["job_id"], on_line=on_line, timeout=timeout
+        )
+        return output, exit_code
+
+    async def _start_job(self, command: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Queue a firmware job and return its job object."""
         job = await self._send(command, args, timeout=60)
         job_id = job.get("job_id") if isinstance(job, dict) else None
         if not job_id:
             raise DashboardError(f"{command}: no job_id in response: {str(job)[:200]}")
+        return job
 
+    async def _stream_job(
+        self,
+        job_id: str,
+        on_line: Callable[[str], None] | None = None,
+        timeout: float = 1200.0,
+    ) -> tuple[str, int, dict[str, Any]]:
+        """Follow one job's output stream; return (output, exit_code, final job object)."""
         lines: list[str] = []
 
         def collect(data: str) -> None:
@@ -286,19 +337,37 @@ class ESPHomeClient:
             raise DashboardError(f"Firmware job {job_id} timed out after {timeout:.0f}s") from None
 
         exit_code: int | None = None
-        if isinstance(final, dict):
-            exit_code = final.get("exit_code")
+        final_job: dict[str, Any] = final if isinstance(final, dict) else {}
+        if final_job:
+            exit_code = final_job.get("exit_code")
             # If the job finished before we attached, its buffered output is in `final`.
-            if not lines and isinstance(final.get("output"), list):
-                lines.extend(str(x) for x in final["output"])
+            if not lines and isinstance(final_job.get("output"), list):
+                lines.extend(str(x) for x in final_job["output"])
         if exit_code is None:
             with contextlib.suppress(Exception):
                 polled = await self._send("firmware/get_job", {"job_id": job_id})
                 if isinstance(polled, dict):
+                    final_job = polled
                     exit_code = polled.get("exit_code")
 
         output = _strip_ansi("".join(lines))
-        return output, (exit_code if exit_code is not None else -1)
+        return output, (exit_code if exit_code is not None else -1), final_job
+
+    async def _find_dependent_job(self, filename: str, depends_on: str) -> dict[str, Any] | None:
+        """Find the job queued behind ``depends_on`` for this configuration.
+
+        ``firmware/install`` returns only the COMPILE job — the OTA upload is a
+        separate job on the upload lane, chained via ``depends_on``. Both are created
+        together by the dashboard's ``enqueue_install_chain``, so it is already
+        listable when the install command returns.
+        """
+        with contextlib.suppress(Exception):
+            jobs = await self._send("firmware/get_jobs", {"configuration": filename})
+            if isinstance(jobs, list):
+                for job in jobs:
+                    if isinstance(job, dict) and job.get("depends_on") == depends_on:
+                        return job
+        return None
 
     async def close(self) -> None:
         if self._reader_task is not None:
@@ -313,7 +382,16 @@ class ESPHomeClient:
     # ----------------------------------------------------------- high-level API
 
     async def get_version(self) -> str:
-        """Fetch the ESPHome version (cheap REST call, also used for liveness)."""
+        """Fetch the ESPHome version.
+
+        Uses the ``config/version`` command; ``GET /version`` is on the dashboard's
+        deprecated legacy-REST list (kept for Home Assistant backward compat) and is
+        only used as a fallback.
+        """
+        with contextlib.suppress(Exception):
+            result = await self._send("config/version", timeout=10)
+            if isinstance(result, dict) and result.get("esphome_version"):
+                return str(result["esphome_version"])
         async with self._http_client() as client:
             resp = await client.get("/version")
             resp.raise_for_status()
@@ -400,6 +478,72 @@ class ESPHomeClient:
         content = await self.get_configuration(filename)
         return await self.validate_yaml(filename, content, timeout=timeout)
 
+    async def migrate_yaml(self, yaml_content: str, timeout: float = 60.0) -> dict[str, Any]:
+        """Ask the dashboard to respell legacy YAML via ``editor/migrate_config``.
+
+        Returns ``{"yaml_diff": {...} | None, "changes": [...]}``. A null ``yaml_diff``
+        means the config already uses current spellings. Applies every migration the
+        installed ESPHome accepts in one splice — this is the backend behind the
+        dashboard's one-click migration offer.
+        """
+        result = await self._send("editor/migrate_config", {"content": yaml_content}, timeout)
+        if not isinstance(result, dict):
+            raise DashboardError(f"Unexpected migrate_config result: {str(result)[:200]}")
+        return result
+
+    async def search_yaml(
+        self,
+        query: str,
+        max_results: int = 50,
+        context_lines: int = 2,
+        case_sensitive: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Substring-search every configured device's YAML via ``yaml/search``.
+
+        The dashboard caps matches at 5 per file and ``max_results`` overall, and
+        scans only each file's first 5000 lines; ``total_matches`` per entry is the
+        uncapped count so callers can report truncation.
+        """
+        result = await self._send(
+            "yaml/search",
+            {
+                "query": query,
+                "max_results": max_results,
+                "context_lines": context_lines,
+                "case_sensitive": case_sensitive,
+            },
+            timeout=60,
+        )
+        return result if isinstance(result, list) else []
+
+    async def troubleshoot(self, filename: str, timeout: float = 40.0) -> dict[str, Any]:
+        """Run the on-demand connectivity probe via ``devices/troubleshoot``.
+
+        Drops the cached DNS entry, then resolves, re-queries mDNS and pings the best
+        target — a live diagnosis rather than a replay of cached monitor state.
+        """
+        result = await self._send("devices/troubleshoot", {"configuration": filename}, timeout)
+        if not isinstance(result, dict):
+            raise DashboardError(f"Unexpected troubleshoot result: {str(result)[:200]}")
+        return result
+
+    async def decode_backtrace(self, filename: str, lines: list[str]) -> dict[str, Any]:
+        """Decode crash-log addresses against the device's local build.
+
+        The dashboard caps this at 200 lines of 500 characters (every address costs
+        an ``addr2line`` spawn), so oversized input is trimmed here rather than
+        rejected server-side.
+        """
+        trimmed = [line[:500] for line in lines[:200]]
+        result = await self._send(
+            "devices/decode_backtrace",
+            {"configuration": filename, "lines": trimmed},
+            timeout=60,
+        )
+        if not isinstance(result, dict):
+            raise DashboardError(f"Unexpected decode_backtrace result: {str(result)[:200]}")
+        return result
+
     async def get_logs(self, filename: str, duration: float = 10.0) -> str:
         """Stream device logs for ``duration`` seconds via ``devices/logs``."""
         await self._connect()
@@ -430,7 +574,8 @@ class ESPHomeClient:
                         {
                             "command": "devices/stop_stream",
                             "message_id": self._next_id(),
-                            "args": {"stream_id": mid},
+                            # The dashboard declares stream_id as a string.
+                            "args": {"stream_id": str(mid)},
                         }
                     )
                 )
@@ -454,15 +599,49 @@ class ESPHomeClient:
         port: str = "OTA",
         on_line: Callable[[str], None] | None = None,
         timeout: float = 1800.0,
-    ) -> tuple[str, int]:
-        """Compile and flash a device via ``firmware/install`` (OTA by default)."""
+    ) -> InstallOutcome:
+        """Compile and flash a device via ``firmware/install`` (OTA by default).
+
+        ``firmware/install`` returns the **COMPILE** job; the flash is a dependent
+        UPLOAD job on a separate lane, so following only the returned job would
+        report success for firmware that never reached the device. Follow both.
+
+        When the device is OFFLINE and ``port`` is OTA the dashboard queues a
+        compile-only job flagged ``is_deferred_install`` and arms it to flash on the
+        device's next check-in — reported back as ``deferred``, not as a flash.
+        """
         logger.info("Installing %s (port=%s)", filename, port)
-        return await self._follow_job(
+        compile_job = await self._start_job(
             "firmware/install",
             {"configuration": filename, "port": port, "force_local": False},
-            on_line=on_line,
-            timeout=timeout,
         )
+        compile_id = compile_job["job_id"]
+        # Both halves of the chain are queued together, so the upload is already
+        # listable; re-query after the compile in case that ever stops holding.
+        upload_job = await self._find_dependent_job(filename, compile_id)
+
+        output, exit_code, final = await self._stream_job(
+            compile_id, on_line=on_line, timeout=timeout
+        )
+        if exit_code != 0:
+            return InstallOutcome(output, exit_code, "compile")
+
+        if final.get("is_deferred_install") or compile_job.get("is_deferred_install"):
+            logger.info("Install for %s deferred: device offline, flash armed", filename)
+            return InstallOutcome(output, 0, "compile", deferred=True)
+
+        if upload_job is None:
+            upload_job = await self._find_dependent_job(filename, compile_id)
+        if upload_job is None:
+            # Pre-chain dashboards installed in a single job; the compile's verdict
+            # is the whole story there.
+            logger.debug("No dependent upload job for %s; single-job install", filename)
+            return InstallOutcome(output, exit_code, "compile")
+
+        up_output, up_code, _ = await self._stream_job(
+            upload_job["job_id"], on_line=on_line, timeout=timeout
+        )
+        return InstallOutcome(output + up_output, up_code, "upload")
 
 
 async def validate_local_configuration(path: str, timeout: float = 120.0) -> tuple[str, int]:

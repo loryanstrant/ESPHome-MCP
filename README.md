@@ -14,6 +14,13 @@ WebSocket command protocol.
 > server. This project keeps the clean tool layer from `kdkavanagh/esphome-mcp` and rewrites
 > the transport for the new protocol. See [`DECISIONS.md`](DECISIONS.md) for the details.
 
+> **Dashboard versions.** The Device Builder ships from
+> [`esphome/device-builder`](https://github.com/esphome/device-builder) on its own release
+> cadence, so its `server_version` is independent of the ESPHome version — 2026.8.0 ships
+> Device Builder 1.12.x, 2026.7.3 ships 1.7.0. This server is written against the 1.12.x
+> protocol and falls back to the pre-1.5.0 device shape where they differ. Its protocol
+> reference is that repo's `docs/API.md` and `models/devices.py`.
+
 ## Tools
 
 | Tool | What it does |
@@ -25,10 +32,18 @@ WebSocket command protocol.
 | `get_device_configuration` | Read a device's YAML |
 | `edit_device_configuration` | Save YAML (then auto-validate) |
 | `validate_device_configuration` | Full ESPHome validation, no save |
+| `migrate_device_configuration` | Respell legacy YAML keys for the installed ESPHome (dry run by default) |
+| `search_device_configurations` | Search every device's YAML for a string |
 | `get_device_logs` | Stream recent device logs |
+| `troubleshoot_device` | Live connectivity probe (DNS, mDNS, ping) |
+| `decode_device_backtrace` | Decode a crash backtrace into source locations |
 | `get_esphome_schema` | Component schema for a version |
 | `install_device_configuration` | Compile + OTA flash (destructive) |
 | `update_device` | Recompile + OTA flash to latest (destructive) |
+
+> **Offline devices.** If a device is offline, the dashboard compiles the firmware and arms
+> it to flash on the device's next check-in. `install_device_configuration` and
+> `update_device` report that as `COMPILED, FLASH DEFERRED` — not success.
 
 ## Configuration
 
@@ -38,8 +53,8 @@ Config is via environment variables (12-factor). Copy [`.env.example`](.env.exam
 | Variable | Required | Description |
 | --- | --- | --- |
 | `ESPHOME_DASHBOARD_URL` | yes | Dashboard base URL, e.g. `https://esphome.example.com` or `http://host:6052`. REST and WebSocket URLs are derived from it. |
-| `ESPHOME_DASHBOARD_USERNAME` | no | Basic Auth user (only if the dashboard reports `requires_auth=true`). |
-| `ESPHOME_DASHBOARD_PASSWORD` | no | Basic Auth password. |
+| `ESPHOME_DASHBOARD_USERNAME` | no | Dashboard user. **Required** if the dashboard reports `requires_auth=true` — without it every command fails with `not_authenticated`. |
+| `ESPHOME_DASHBOARD_PASSWORD` | no | Dashboard password. |
 | `LOG_LEVEL` | no | `DEBUG`/`INFO`/`WARNING`/`ERROR` (default `INFO`). |
 
 ## Run with Docker
