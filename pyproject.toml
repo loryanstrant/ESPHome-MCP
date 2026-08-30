@@ -6,7 +6,12 @@ license = "MIT"
 requires-python = ">=3.13"
 authors = [{ name = "loryanstrant", email = "loryan@loryanstrant.com" }]
 dependencies = [
-    "fastmcp>=2.0.0",
+    # Bounded, not floating: the HTTP transport's session-retention behaviour changed
+    # inside the 3.4.x line, and an open-ended range means a rebuild silently picks up
+    # whatever is current. `mcp` is bounded alongside it because fastmcp's own range on
+    # it is loose. See DECISIONS.md (2026-08-30).
+    "fastmcp>=3.4.7,<3.5",
+    "mcp>=1.29.0,<1.30",
     "httpx>=0.27.0",
     "websockets>=13.0",
     "pydantic-settings>=2.0.0",
