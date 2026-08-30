@@ -1,5 +1,47 @@
 # Decisions & lessons
 
+## 2026-08-30 — the HTTP transport runs stateless (it was leaking every session)
+
+**Context.** `esphome-mcp` served its Streamable HTTP transport in fastmcp's default
+**stateful** mode. A gateway (MetaMCP, here) opens a fresh MCP session per burst of tool
+calls and never sends `DELETE /mcp`; fastmcp 3.4.x only evicts a session from
+`StreamableHTTPSessionManager._server_instances` when that session's server task ends,
+which never happens for a connection that is simply dropped. Every session ever served
+stays resident.
+
+Measured across the homelab's FastMCP wrappers — it tracks the library, not the workload:
+
+| Server | fastmcp / mcp | sessions served | memory | per session |
+|---|---|---|---|---|
+| GPT-Researcher-MCP | 3.3.1 / 1.27.2 | 90,372 | 200 MiB | 2.3 KB (flat) |
+| SnapOtter-MCP | 3.4.4 / 1.28.1 | 28,096 | 1000 MiB | **36 KB** |
+| CaddyUI-MCP | 3.4.5 / 1.29.0 | 51,682 | 2.7 GiB | **55 KB** |
+| esphome-mcp | 3.4.7 / 1.29.0 | 9,203 | 174 MiB | growing |
+
+Driving 500 fresh sessions at the sibling wrapper added 27,804 kB — **57 KB leaked per
+session**, and only 221 MB of its 1 GB was `Referenced`; the rest was cold, dead session
+state.
+
+**Decision.** `main_web()` runs `mcp.run(..., stateless_http=True)`. No tool here uses
+`Context`, progress, or server-initiated notifications, so per-session state buys nothing.
+
+**Consequence.** Stateless mode drops `GET /mcp` and returns **405**. That is correct and
+expected: the MCP spec says a server MAY answer the GET stream with 405, and clients
+handle it — the TypeScript SDK treats 405 as "server offers no SSE stream" and continues
+(`client/streamableHttp.js:96`). `tests/test_tools.py::test_http_app_is_stateless` pins
+this, with a paired test so the 405 cannot pass for a broken route. The stdio entrypoint
+(`main()`) is unaffected — stdio has no sessions.
+
+**Also.** `fastmcp>=2.0.0` was open-ended, so an image rebuild silently picked up whatever
+was current — which is how this regression arrived. Both `fastmcp` and `mcp` are now
+bounded to a minor line. Bump them deliberately, and re-measure with a session-churn probe
+when you do.
+
+**Lesson (reusable).** Any MCP server behind a gateway should run stateless unless it
+genuinely needs server-push. A leak like this is invisible in every functional test — the
+server keeps answering correctly, it just never gives the memory back — so the check that
+finds it is "drive N sessions, read RSS twice", not a status code.
+
 ## 2026-08-20 — The dashboard is versioned separately, and its wire shape moved
 
 **Context.** The transport below was reverse-engineered against a dashboard reporting

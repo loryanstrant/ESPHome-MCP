@@ -423,3 +423,32 @@ def test_format_migration_change_flags_required():
         {"kind": "key", "scope": "api", "old": "services", "new": "actions", "required": True}
     )
     assert "REQUIRED" in out
+
+
+# --------------------------------------------------------- transport (regression guard)
+
+
+def _get_mcp(stateless: bool) -> int:
+    """Status of GET /mcp against the web entrypoint's ASGI app."""
+    from starlette.testclient import TestClient
+
+    with TestClient(server.mcp.http_app(stateless_http=stateless)) as client:
+        return client.get("/mcp").status_code
+
+
+def test_http_app_is_stateless():
+    """The web entrypoint must not retain per-session state.
+
+    A gateway opens a new MCP session per burst of calls and never sends DELETE /mcp;
+    fastmcp only evicts a session when its server task ends, so a stateful server keeps
+    every session it has ever served (~57 KB each — a sibling wrapper reached 1 GB in two
+    weeks). Stateless mode has no session table, and drops the GET SSE stream that exists
+    only to carry server-initiated messages: hence 405, which MCP clients handle per spec
+    as "this server offers no SSE stream".
+    """
+    assert _get_mcp(stateless=True) == 405
+
+
+def test_stateful_mode_would_still_offer_the_get_stream():
+    """Guards the assertion above — 405 has to mean statelessness, not a broken route."""
+    assert _get_mcp(stateless=False) != 405

@@ -53,7 +53,14 @@ def main() -> None:
 def main_web() -> None:
     _configure_logging()
     _check_connectivity()
-    mcp.run(transport="http", host="0.0.0.0", port=8080)
+    # stateless_http: a gateway like MetaMCP opens a NEW MCP session per burst of calls
+    # and never sends DELETE /mcp, and fastmcp 3.4.x only evicts a session once its
+    # server task ends — so in stateful mode every session ever served stays resident
+    # (measured at ~57 KB each on a sibling wrapper, which reached 1 GB in two weeks).
+    # None of the tools here use Context, progress or server-initiated notifications, so
+    # sessions buy nothing. Stateless drops GET /mcp (405), which MCP clients handle per
+    # spec as "this server offers no SSE stream".
+    mcp.run(transport="http", host="0.0.0.0", port=8080, stateless_http=True)
 
 
 if __name__ == "__main__":
