@@ -16,10 +16,16 @@ WebSocket command protocol.
 
 > **Dashboard versions.** The Device Builder ships from
 > [`esphome/device-builder`](https://github.com/esphome/device-builder) on its own release
-> cadence, so its `server_version` is independent of the ESPHome version — 2026.8.0 ships
-> Device Builder 1.12.x, 2026.7.3 ships 1.7.0. This server is written against the 1.12.x
-> protocol and falls back to the pre-1.5.0 device shape where they differ. Its protocol
-> reference is that repo's `docs/API.md` and `models/devices.py`.
+> cadence, so its `server_version` is independent of the ESPHome version — 2026.9.0 ships
+> Device Builder 1.14.9, 2026.8.0 ships 1.12.x, 2026.7.3 ships 1.7.0. (The pin is in
+> ESPHome's own `docker/Dockerfile`, which is the only place it is written down.) This server
+> is written against the 1.14.x protocol and falls back to the pre-1.5.0 device shape where
+> they differ. Its protocol reference is that repo's `docs/API.md` and `models/devices.py`.
+
+> **Device Builder 1.15+ ships its own MCP server** at `/api/mcp`, so on a dashboard new
+> enough to have it you may not need this one. It arrives with ESPHome 2026.10 at the
+> earliest — 2026.9.0 bundles 1.14.9. See
+> [`DECISIONS.md`](DECISIONS.md) for what this server still does that upstream's does not.
 
 > **Upgrading from 2026.06.0?** On ESPHome 2026.7 or newer it reported every device as
 > `unknown` with no deployed version, and could report a successful install for firmware it

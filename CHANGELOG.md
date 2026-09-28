@@ -2,16 +2,56 @@
 
 Versions are dated (`YYYY.MM.N`) and track the ESPHome release they were tested against.
 
-Two version numbers matter when reading these notes: **ESPHome** (2026.8.0) and the
-**Device Builder** dashboard (1.12.x). They ship separately and move independently, so the
+Two version numbers matter when reading these notes: **ESPHome** (2026.9.0) and the
+**Device Builder** dashboard (1.14.9). They ship separately and move independently, so the
 dashboard version is what actually decides which of this server's tools work. Your dashboard
 reports both on the first frame of its WebSocket connection, and this server logs them at
 startup:
 
 ```
-Connected to ESPHome Device Builder 2026.8.0 (server 1.12.1, requires_auth=False)
+Connected to ESPHome Device Builder 2026.9.0 (server 1.14.9, requires_auth=False)
                                     ^ESPHome         ^Device Builder
 ```
+
+---
+
+## 2026.09.0 — 2026-09-28
+
+**Tested against ESPHome 2026.9.0 (Device Builder 1.14.9). No code changes were needed —
+upgrade the dashboard whenever you like.**
+
+### Compatibility
+
+- **ESPHome 2026.9.0 is safe for this server.** It bundles Device Builder **1.14.9** (the pin
+  lives in ESPHome's `docker/Dockerfile`, nowhere else). Against 1.12.0 its command table
+  removes nothing and adds one command, `devices/get_encryption_key`; every command this
+  server calls is unchanged in arguments and response shape.
+- **`get_esphome_schema("2026.9.0")` works** — the `esphome-schema` repo publishes a
+  2026.9.0 `schema.zip`.
+- **2026.9's breaking changes are all YAML spellings** — `modbus_controller`
+  `custom_command` → `custom_pdu` and `register_count`/`force_new_range` →
+  `reuse_previous_range`, `api` `homeassistant.event` variables treated as lambdas, the esp32
+  custom eFuse MAC becoming the base MAC, `esp32_hosted` needing ESP-IDF 5.3+. The dashboard
+  supplies the migration rules, so `migrate_device_configuration` covers them; run it with
+  `apply=False` on each device after upgrading, before you recompile firmware.
+
+### Known limitation (not fixed, by choice)
+
+- **No tool exposes a device's encryption key.** Device Builder 1.14.6 added
+  `devices/get_encryption_key`, and 2026.9 shares one key between `api:` and `ota:`. Wrapping
+  it would put a live secret into an MCP client's transcript, so this server does not — and
+  neither does the dashboard's own MCP server. Read the key in the dashboard editor.
+
+---
+
+## 2026.08.2 — 2026-08-30
+
+### Fixed
+
+- **The HTTP transport retained every MCP session it ever served.** `main_web()` now runs
+  fastmcp stateless (`stateless_http=True`), so a gateway that opens a session per burst of
+  tool calls no longer grows the process. `GET /mcp` answers **405** in stateless mode, which
+  is correct and expected. Full measurements in [`DECISIONS.md`](DECISIONS.md).
 
 ---
 
