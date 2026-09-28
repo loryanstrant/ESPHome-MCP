@@ -1,5 +1,60 @@
 # Decisions & lessons
 
+## 2026-09-28 — the Device Builder now ships its own MCP server, and that decides this one's future
+
+**Context.** Device Builder **1.15.0** (2026-09-23) added an MCP endpoint at **`/api/mcp`** —
+`initialize` / `ping` / `tools/list` / `tools/call`, backed by the same command table as the
+WebSocket surface, so its validation and error codes match byte for byte. Roughly 22 tools:
+`list_devices`, `get_config`, `update_config`, `add_component`, `validate_config`, `compile`,
+`install`, `get_job`, `cancel_job`, `search_components`, `get_component`,
+`get_config_components`, `search_boards`, `list_secret_names`, `set_secret`, `create_device`,
+and five automation tools (`list_automations`, `get_available_automations`,
+`get_automation_docs`, `upsert_automation`, `delete_automation`). 1.16.0 added a
+`firmware/analyze_memory` job; 1.17.0 is current.
+
+It is **not in ESPHome 2026.9.0**, which pins Device Builder 1.14.9 in ESPHome's
+`docker/Dockerfile`. So it arrives with 2026.10 at the earliest, or sooner for anyone who
+installs `esphome-device-builder` themselves.
+
+**What upstream does better.** Automations (parse / upsert / delete with a real YAML splice),
+the component and board catalogs, `add_component`, secrets, `cancel_job` — none of which exist
+here. (`firmware/analyze_memory` is a WebSocket job only; it is **not** in the 1.17.0 MCP tool
+list.) And **optimistic concurrency**: its `update_config` requires an
+`expected` copy of the text the caller read, so a tool cannot clobber a file it has not read
+(`precondition_failed` otherwise). This server's `edit_device_configuration` has no such
+guard.
+
+**What this server still has that upstream's does not.** `troubleshoot_device` (DNS / mDNS /
+ping probe), `decode_device_backtrace`, `get_esphome_schema` (fetched per ESPHome version from
+`esphome/esphome-schema`), `search_device_configurations`, `migrate_device_configuration`,
+`update_device`, `check_device_update`, `get_device_version`, `get_device_status`, and log
+streaming as a tool. Plus it runs **out of process** — one container, its own URL, a
+healthcheck that proves the dashboard answers — which is what makes it usable from a gateway
+and from hosts that are not the dashboard's.
+
+**Decision.** Keep this server, and do **not** race upstream on the overlapping tools. When a
+dashboard with `/api/mcp` lands here, re-read `docs/API.md` §MCP and decide per tool: wire the
+thin ones straight to upstream, keep the ones above. Revisit the whole project's existence at
+that point — "the dashboard does this now" is a perfectly good reason to retire a fork.
+
+**Also decided: no tool returns an encryption key.** 1.14.6 added
+`devices/get_encryption_key` (2026.9 shares one key between `api:` and `ota:`). Wrapping it
+would write a live secret into an MCP client's transcript, which is exactly the thing
+transcripts are bad at holding. Upstream's own MCP tool list omits it too. Read the key in the
+dashboard editor.
+
+**The trigger is dated, not vague.** ESPHome's `dev` branch already pins
+`esphome-device-builder==1.17.0` (`docker/Dockerfile`), while `beta` and `release` still pin
+1.14.9 — so **ESPHome 2026.10 is the release that brings `/api/mcp` here**. Check it with
+`curl -s https://raw.githubusercontent.com/esphome/esphome/dev/docker/Dockerfile | grep
+device-builder`. On the upgrade that first reports `server_version` 1.15 or newer, do the
+per-tool triage above rather than deferring it again.
+
+**Lesson (reusable).** Track the *dashboard's* releases, not ESPHome's — 1.12.0 → 1.14.9 is
+five weeks of dashboard work that ESPHome's changelog never mentions, and the single most
+important change to this project in months shipped in a dashboard release with no ESPHome
+release attached at all.
+
 ## 2026-08-30 — the HTTP transport runs stateless (it was leaking every session)
 
 **Context.** `esphome-mcp` served its Streamable HTTP transport in fastmcp's default
