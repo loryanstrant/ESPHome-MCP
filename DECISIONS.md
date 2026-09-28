@@ -17,8 +17,9 @@ It is **not in ESPHome 2026.9.0**, which pins Device Builder 1.14.9 in ESPHome's
 installs `esphome-device-builder` themselves.
 
 **What upstream does better.** Automations (parse / upsert / delete with a real YAML splice),
-the component and board catalogs, `add_component`, secrets, `cancel_job`, memory analysis —
-none of which exist here. And **optimistic concurrency**: its `update_config` requires an
+the component and board catalogs, `add_component`, secrets, `cancel_job` — none of which exist
+here. (`firmware/analyze_memory` is a WebSocket job only; it is **not** in the 1.17.0 MCP tool
+list.) And **optimistic concurrency**: its `update_config` requires an
 `expected` copy of the text the caller read, so a tool cannot clobber a file it has not read
 (`precondition_failed` otherwise). This server's `edit_device_configuration` has no such
 guard.
@@ -41,6 +42,13 @@ that point — "the dashboard does this now" is a perfectly good reason to retir
 would write a live secret into an MCP client's transcript, which is exactly the thing
 transcripts are bad at holding. Upstream's own MCP tool list omits it too. Read the key in the
 dashboard editor.
+
+**The trigger is dated, not vague.** ESPHome's `dev` branch already pins
+`esphome-device-builder==1.17.0` (`docker/Dockerfile`), while `beta` and `release` still pin
+1.14.9 — so **ESPHome 2026.10 is the release that brings `/api/mcp` here**. Check it with
+`curl -s https://raw.githubusercontent.com/esphome/esphome/dev/docker/Dockerfile | grep
+device-builder`. On the upgrade that first reports `server_version` 1.15 or newer, do the
+per-tool triage above rather than deferring it again.
 
 **Lesson (reusable).** Track the *dashboard's* releases, not ESPHome's — 1.12.0 → 1.14.9 is
 five weeks of dashboard work that ESPHome's changelog never mentions, and the single most

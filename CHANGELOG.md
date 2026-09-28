@@ -35,6 +35,34 @@ upgrade the dashboard whenever you like.**
   supplies the migration rules, so `migrate_device_configuration` covers them; run it with
   `apply=False` on each device after upgrading, before you recompile firmware.
 
+### Sunset notice — read this before you invest in this server
+
+**This server will probably be archived when ESPHome ships a dashboard that has MCP built
+in.** Device Builder **1.15.0** (2026-09-23) added its own MCP endpoint at **`POST /api/mcp`**
+— `initialize` / `ping` / `tools/list` / `tools/call`, about 22 tools, backed by the same
+command table as the WebSocket surface. ESPHome's `dev` branch already pins Device Builder
+**1.17.0**, so it lands in **ESPHome 2026.10**. 2026.9.0 pins 1.14.9, which is why this
+release still has a job to do.
+
+When it lands, most of this server is redundant, and upstream's version of the overlap is
+better: its `update_config` requires an `expected` copy of the text you read, so a tool
+cannot clobber a file someone else changed — this server has no such guard. Upstream also
+has things this never did: automations (parse / upsert / delete), the component and board
+catalogs, `add_component`, secrets, `cancel_job`.
+
+Five tools here have **no** upstream equivalent as of 1.17.0 — `get_device_logs`,
+`troubleshoot_device`, `decode_device_backtrace`, `migrate_device_configuration`,
+`search_device_configurations`. All five are thin wrappers over WebSocket commands the
+dashboard already implements (`devices/logs`, `devices/troubleshoot`,
+`devices/decode_backtrace`, `editor/migrate_config`, `yaml/search`), so the intended
+endgame is to offer them upstream and retire this repo rather than maintain a fork of
+tools the dashboard now owns.
+
+**What to do:** nothing yet. Keep using this on ESPHome 2026.9 and earlier. When you upgrade
+to a dashboard reporting Device Builder 1.15 or newer, point your MCP client at
+`http://<dashboard>:6052/api/mcp` and keep this server only for whichever of those five
+tools you actually use. See [`DECISIONS.md`](DECISIONS.md) for the full comparison.
+
 ### Known limitation (not fixed, by choice)
 
 - **No tool exposes a device's encryption key.** Device Builder 1.14.6 added

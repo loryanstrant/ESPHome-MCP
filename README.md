@@ -22,10 +22,15 @@ WebSocket command protocol.
 > is written against the 1.14.x protocol and falls back to the pre-1.5.0 device shape where
 > they differ. Its protocol reference is that repo's `docs/API.md` and `models/devices.py`.
 
-> **Device Builder 1.15+ ships its own MCP server** at `/api/mcp`, so on a dashboard new
-> enough to have it you may not need this one. It arrives with ESPHome 2026.10 at the
-> earliest — 2026.9.0 bundles 1.14.9. See
-> [`DECISIONS.md`](DECISIONS.md) for what this server still does that upstream's does not.
+> **⚠ Sunset notice.** **Device Builder 1.15+ ships its own MCP server** at `POST /api/mcp`
+> (~22 tools), and ESPHome's `dev` branch already pins Device Builder 1.17.0 — so it arrives
+> with **ESPHome 2026.10**. On a dashboard that has it, most of this server is redundant and
+> **this project will probably be archived**. Until then (2026.9.0 bundles 1.14.9) it is still
+> the way to drive the dashboard over MCP. Five tools here have no upstream equivalent as of
+> 1.17.0 — `get_device_logs`, `troubleshoot_device`, `decode_device_backtrace`,
+> `migrate_device_configuration`, `search_device_configurations` — and the intent is to offer
+> those upstream rather than keep a fork alive. Full comparison in
+> [`DECISIONS.md`](DECISIONS.md).
 
 > **Upgrading from 2026.06.0?** On ESPHome 2026.7 or newer it reported every device as
 > `unknown` with no deployed version, and could report a successful install for firmware it
