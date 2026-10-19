@@ -1,0 +1,507 @@
+{
+  "schema_version": "1.0",
+  "repository": "ESPHome-MCP",
+  "identity": {
+    "description": "An [MCP](https://modelcontextprotocol.io) server for the **ESPHome 2026.6+ \"Device",
+    "default_branch": "main",
+    "languages": {
+      "Python": 8
+    },
+    "topics": [],
+    "licence": "MIT License",
+    "file_count": 22
+  },
+  "start_here": {
+    "readme": "README.md",
+    "agents_md": "AGENTS.md",
+    "entry_points": [
+      "src/esphome_mcp/__main__.py",
+      "src/esphome_mcp/server.py"
+    ],
+    "decision_records": [
+      "DECISIONS.md"
+    ],
+    "build_config": [
+      "Makefile",
+      "pyproject.toml"
+    ],
+    "source_roots": [
+      "src",
+      "."
+    ]
+  },
+  "documentation": [
+    {
+      "path": "CHANGELOG.md",
+      "title": "Changelog",
+      "lines": 206,
+      "headings": [
+        {
+          "level": 2,
+          "text": "2026.09.0 — 2026-09-28",
+          "anchor": "2026090--2026-09-28"
+        },
+        {
+          "level": 3,
+          "text": "Compatibility",
+          "anchor": "compatibility"
+        },
+        {
+          "level": 3,
+          "text": "Sunset notice — read this before you invest in this server",
+          "anchor": "sunset-notice--read-this-before-you-invest-in-this-server"
+        },
+        {
+          "level": 3,
+          "text": "Known limitation (not fixed, by choice)",
+          "anchor": "known-limitation-not-fixed-by-choice"
+        },
+        {
+          "level": 2,
+          "text": "2026.08.2 — 2026-08-30",
+          "anchor": "2026082--2026-08-30"
+        },
+        {
+          "level": 3,
+          "text": "Fixed",
+          "anchor": "fixed"
+        },
+        {
+          "level": 2,
+          "text": "2026.08.1 — 2026-08-20",
+          "anchor": "2026081--2026-08-20"
+        },
+        {
+          "level": 3,
+          "text": "Fixed",
+          "anchor": "fixed-1"
+        },
+        {
+          "level": 2,
+          "text": "2026.08.0 — 2026-08-20",
+          "anchor": "2026080--2026-08-20"
+        },
+        {
+          "level": 3,
+          "text": "Fixed",
+          "anchor": "fixed-2"
+        },
+        {
+          "level": 3,
+          "text": "Added",
+          "anchor": "added"
+        },
+        {
+          "level": 3,
+          "text": "Changed",
+          "anchor": "changed"
+        },
+        {
+          "level": 3,
+          "text": "Compatibility",
+          "anchor": "compatibility-1"
+        },
+        {
+          "level": 2,
+          "text": "2026.06.0 — 2026-06-24",
+          "anchor": "2026060--2026-06-24"
+        }
+      ]
+    },
+    {
+      "path": "DECISIONS.md",
+      "title": "Decisions & lessons",
+      "lines": 217,
+      "headings": [
+        {
+          "level": 2,
+          "text": "2026-09-28 — the Device Builder now ships its own MCP server, and that decides this one's future",
+          "anchor": "2026-09-28--the-device-builder-now-ships-its-own-mcp-server-and-that-decides-this-ones-future"
+        },
+        {
+          "level": 2,
+          "text": "2026-08-30 — the HTTP transport runs stateless (it was leaking every session)",
+          "anchor": "2026-08-30--the-http-transport-runs-stateless-it-was-leaking-every-session"
+        },
+        {
+          "level": 2,
+          "text": "2026-08-20 — The dashboard is versioned separately, and its wire shape moved",
+          "anchor": "2026-08-20--the-dashboard-is-versioned-separately-and-its-wire-shape-moved"
+        },
+        {
+          "level": 2,
+          "text": "2026-06-24 — ESPHome 2026.6 \"Device Builder\" replaced the dashboard API",
+          "anchor": "2026-06-24--esphome-20266-device-builder-replaced-the-dashboard-api"
+        }
+      ]
+    },
+    {
+      "path": "README.md",
+      "title": "ESPHome MCP",
+      "lines": 135,
+      "headings": [
+        {
+          "level": 2,
+          "text": "Tools",
+          "anchor": "tools"
+        },
+        {
+          "level": 2,
+          "text": "Configuration",
+          "anchor": "configuration"
+        },
+        {
+          "level": 2,
+          "text": "Run with Docker",
+          "anchor": "run-with-docker"
+        },
+        {
+          "level": 2,
+          "text": "Connect an MCP client",
+          "anchor": "connect-an-mcp-client"
+        },
+        {
+          "level": 2,
+          "text": "Develop",
+          "anchor": "develop"
+        },
+        {
+          "level": 2,
+          "text": "Credits",
+          "anchor": "credits"
+        },
+        {
+          "level": 2,
+          "text": "License",
+          "anchor": "license"
+        }
+      ]
+    }
+  ],
+  "code": {
+    "source_roots": [
+      "src",
+      "."
+    ],
+    "symbol_source": "repomix (tree-sitter signatures)",
+    "routes": [],
+    "files": [
+      {
+        "path": "healthcheck.py",
+        "symbols": [
+          {
+            "kind": "const",
+            "name": "URL",
+            "parent": "",
+            "signature": "URL = \"http://localhost:8080/mcp\""
+          },
+          {
+            "kind": "const",
+            "name": "HEADERS",
+            "parent": "",
+            "signature": "HEADERS ="
+          },
+          {
+            "kind": "function",
+            "name": "main",
+            "parent": "",
+            "signature": "main() -> None"
+          }
+        ]
+      },
+      {
+        "path": "src/esphome_mcp/__main__.py",
+        "symbols": [
+          {
+            "kind": "const",
+            "name": "LOG_FORMAT",
+            "parent": "",
+            "signature": "LOG_FORMAT = \"%(asctime)s %(levelname)s [%(name)s] %(message)s\""
+          },
+          {
+            "kind": "function",
+            "name": "main",
+            "parent": "",
+            "signature": "main() -> None"
+          },
+          {
+            "kind": "function",
+            "name": "main_web",
+            "parent": "",
+            "signature": "main_web() -> None"
+          }
+        ]
+      },
+      {
+        "path": "src/esphome_mcp/client.py",
+        "symbols": [
+          {
+            "kind": "function",
+            "name": "runtime_field",
+            "parent": "",
+            "signature": "runtime_field(device: dict[str, Any], key: str, default: Any = \"\") -> Any"
+          },
+          {
+            "kind": "class",
+            "name": "InstallOutcome",
+            "parent": "",
+            "signature": "class InstallOutcome(NamedTuple)"
+          },
+          {
+            "kind": "class",
+            "name": "ESPHomeSettings",
+            "parent": "",
+            "signature": "class ESPHomeSettings(BaseSettings)"
+          },
+          {
+            "kind": "class",
+            "name": "DashboardError",
+            "parent": "",
+            "signature": "class DashboardError(Exception)"
+          },
+          {
+            "kind": "class",
+            "name": "ESPHomeClient",
+            "parent": "",
+            "signature": "class ESPHomeClient"
+          },
+          {
+            "kind": "function",
+            "name": "collect",
+            "parent": "",
+            "signature": "collect(data: str) -> None"
+          },
+          {
+            "kind": "function",
+            "name": "close",
+            "parent": "ESPHomeClient",
+            "signature": "close(self) -> None"
+          },
+          {
+            "kind": "function",
+            "name": "get_version",
+            "parent": "ESPHomeClient",
+            "signature": "get_version(self) -> str"
+          },
+          {
+            "kind": "function",
+            "name": "get_configured_devices",
+            "parent": "ESPHomeClient",
+            "signature": "get_configured_devices(self) -> list[dict[str, Any]]"
+          },
+          {
+            "kind": "function",
+            "name": "get_devices",
+            "parent": "ESPHomeClient",
+            "signature": "get_devices(self) -> list[dict[str, Any]]"
+          },
+          {
+            "kind": "function",
+            "name": "ping",
+            "parent": "ESPHomeClient",
+            "signature": "ping(self) -> None"
+          },
+          {
+            "kind": "function",
+            "name": "get_configuration",
+            "parent": "ESPHomeClient",
+            "signature": "get_configuration(self, filename: str) -> str"
+          },
+          {
+            "kind": "function",
+            "name": "save_configuration",
+            "parent": "ESPHomeClient",
+            "signature": "save_configuration(self, filename: str, yaml_content: str) -> None"
+          },
+          {
+            "kind": "function",
+            "name": "validate_configuration",
+            "parent": "ESPHomeClient",
+            "signature": "validate_configuration(self, filename: str, timeout: float = 60.0) -> tuple[str, int]"
+          },
+          {
+            "kind": "function",
+            "name": "migrate_yaml",
+            "parent": "ESPHomeClient",
+            "signature": "migrate_yaml(self, yaml_content: str, timeout: float = 60.0) -> dict[str, Any]"
+          },
+          {
+            "kind": "function",
+            "name": "troubleshoot",
+            "parent": "ESPHomeClient",
+            "signature": "troubleshoot(self, filename: str, timeout: float = 40.0) -> dict[str, Any]"
+          },
+          {
+            "kind": "function",
+            "name": "decode_backtrace",
+            "parent": "ESPHomeClient",
+            "signature": "decode_backtrace(self, filename: str, lines: list[str]) -> dict[str, Any]"
+          },
+          {
+            "kind": "function",
+            "name": "get_logs",
+            "parent": "ESPHomeClient",
+            "signature": "get_logs(self, filename: str, duration: float = 10.0) -> str"
+          },
+          {
+            "kind": "function",
+            "name": "validate_local_configuration",
+            "parent": "",
+            "signature": "validate_local_configuration(path: str, timeout: float = 120.0) -> tuple[str, int]"
+          },
+          {
+            "kind": "function",
+            "name": "fetch_schema",
+            "parent": "",
+            "signature": "fetch_schema(version: str, component: str | None = None) -> dict[str, str] | str"
+          },
+          {
+            "kind": "function",
+            "name": "configure",
+            "parent": "",
+            "signature": "configure(settings: ESPHomeSettings) -> None"
+          },
+          {
+            "kind": "function",
+            "name": "get_client",
+            "parent": "",
+            "signature": "get_client() -> ESPHomeClient"
+          },
+          {
+            "kind": "function",
+            "name": "reset",
+            "parent": "",
+            "signature": "reset() -> None"
+          }
+        ]
+      },
+      {
+        "path": "src/esphome_mcp/server.py",
+        "symbols": [
+          {
+            "kind": "const",
+            "name": "INSTRUCTIONS",
+            "parent": "",
+            "signature": "INSTRUCTIONS = \"\"\"\\"
+          },
+          {
+            "kind": "function",
+            "name": "list_devices",
+            "parent": "",
+            "signature": "list_devices() -> str"
+          },
+          {
+            "kind": "function",
+            "name": "list_device_names",
+            "parent": "",
+            "signature": "list_device_names() -> str"
+          },
+          {
+            "kind": "function",
+            "name": "check_device_update",
+            "parent": "",
+            "signature": "check_device_update(device_name: str) -> str"
+          },
+          {
+            "kind": "function",
+            "name": "get_device_status",
+            "parent": "",
+            "signature": "get_device_status(device_name: str) -> str"
+          },
+          {
+            "kind": "function",
+            "name": "get_device_version",
+            "parent": "",
+            "signature": "get_device_version(device_name: str) -> str"
+          },
+          {
+            "kind": "function",
+            "name": "get_esphome_schema",
+            "parent": "",
+            "signature": "get_esphome_schema(version: str, component: str | None = None) -> str"
+          },
+          {
+            "kind": "function",
+            "name": "get_device_configuration",
+            "parent": "",
+            "signature": "get_device_configuration(device_name: str, output_path: str | None = None) -> str"
+          },
+          {
+            "kind": "function",
+            "name": "get_device_logs",
+            "parent": "",
+            "signature": "get_device_logs(device_name: str, duration: int = 10) -> str"
+          },
+          {
+            "kind": "function",
+            "name": "validate_device_configuration",
+            "parent": "",
+            "signature": "validate_device_configuration(device_or_path: str) -> str"
+          },
+          {
+            "kind": "function",
+            "name": "migrate_device_configuration",
+            "parent": "",
+            "signature": "migrate_device_configuration(device_name: str, apply: bool = False) -> str"
+          },
+          {
+            "kind": "function",
+            "name": "troubleshoot_device",
+            "parent": "",
+            "signature": "troubleshoot_device(device_name: str) -> str"
+          },
+          {
+            "kind": "function",
+            "name": "verdict",
+            "parent": "",
+            "signature": "verdict(ok: object, inconclusive: object, detail: str) -> str"
+          },
+          {
+            "kind": "function",
+            "name": "decode_device_backtrace",
+            "parent": "",
+            "signature": "decode_device_backtrace(device_name: str, backtrace: str) -> str"
+          },
+          {
+            "kind": "function",
+            "name": "install_device_configuration",
+            "parent": "",
+            "signature": "install_device_configuration(device_name: str) -> str"
+          },
+          {
+            "kind": "function",
+            "name": "update_device",
+            "parent": "",
+            "signature": "update_device(device_name: str) -> str"
+          }
+        ]
+      }
+    ]
+  },
+  "tests": [
+    "tests/__init__.py",
+    "tests/conftest.py",
+    "tests/test_tools.py"
+  ],
+  "operations": [
+    ".dockerignore",
+    ".env.example",
+    ".github/workflows/ci.yml",
+    ".github/workflows/codeql.yml",
+    ".github/workflows/release.yml",
+    "Dockerfile",
+    "compose.yaml"
+  ],
+  "limitations": {
+    "unparsed_languages": [],
+    "excluded_dirs": [],
+    "code_map_truncated": false,
+    "code_map_symbols_capped": true,
+    "tracked_files_only": true
+  },
+  "generated": {
+    "source_commit": "a0a8075f8ef5aa3f80fceb745c2534ab21e1fdd6",
+    "content_hash": "e37e51ea6cc45cbf",
+    "generator": "navgen"
+  }
+}
