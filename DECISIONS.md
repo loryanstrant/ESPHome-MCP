@@ -1,5 +1,75 @@
 # Decisions & lessons
 
+## 2026-10-26 — it landed; verified live; keep this server, narrowed to six tools
+
+**The trigger from 2026-09-28 fired.** ESPHome **2026.10.0** pins
+`esphome-device-builder==1.25.0` in `docker/Dockerfile` (`dev` pins 1.26.0), so the built-in
+MCP server is now in a release. Confirmed by reading the pin, then by driving the thing.
+
+**Verified live against `esphome.strant.casa` (ESPHome 2026.10.0), not inferred:**
+
+| Check | Result |
+| --- | --- |
+| `initialize` | `serverInfo: {name: "ESPHome Device Builder", version: "1.25.0"}`, protocol `2025-06-18` |
+| `tools/list` | **21** tools (the 1.17.0 list, unchanged) |
+| `list_devices` | 38 devices, incl. `state`, `deployed_version`, `current_version`, `update_available`, `has_pending_changes`, `migration_available` |
+| `get_config` vs this server's `get_device_configuration` | **560 bytes each, `diff` clean — byte-for-byte identical** |
+| `validate_config` | `{"success":true,"exit_code":0}` + log tail; this server's `validate_device_configuration` returned `VALID` on the same device |
+| `update_config` with a deliberately wrong `expected` | `precondition_failed`, a unified diff of expected vs current, **nothing written** |
+| `POST /api/mcp` with no credentials | **401** (this dashboard has a password set) |
+
+**Measurements** (same dashboard, same moment — these are the numbers the README quotes):
+
+| | this server | built-in |
+| --- | --- | --- |
+| `list_devices`, 38 devices | 9,373 B | 42,706 B |
+| `list_device_names` | 599 B | no equivalent |
+| `tools/list` payload | 12,930 B / 16 tools | 16,929 B / 21 tools |
+
+**This server also still works** against 1.25.0 — devices, status, versions, config read,
+`search_device_configurations` and `troubleshoot_device` all verified on the upgraded
+dashboard. The 2026.10 upgrade was not a breaking change for it.
+
+**Decision: keep, narrowed.** Do not reimplement anything upstream now has, and do not retire
+this. Its remaining purpose is the six tools with no built-in equivalent — `get_device_logs`,
+`troubleshoot_device`, `decode_device_backtrace`, `migrate_device_configuration`,
+`search_device_configurations`, `get_esphome_schema` — plus two properties the built-in cannot
+offer: a compact device list (4.5× smaller, and a names-only variant), and self-contained
+auth for clients that cannot attach headers. The exit route is unchanged: offer the six
+upstream, then archive.
+
+**Explicitly not done in this pass:** adding an `expected`-style precondition to
+`edit_device_configuration`. It is the right fix — the built-in refuses to clobber and this
+does not — but it is a behaviour change with its own tests, not a docs pass. The README now
+says plainly to prefer the built-in for edits.
+
+**Corrections to the 2026-09-28 entry below:** it is **21** tools, not ~22, and **six** have
+no equivalent, not five (`get_esphome_schema` belongs on the list — the built-in
+`get_component` takes `component_ids`/`platform`/`board_id` and no ESPHome version, so it can
+only describe the dashboard's own). The tool list has not moved since 1.17.0:
+`api/mcp/tools.py`, `mcp/tools.py` and `mcp/transport.py` are byte-identical between the
+1.25.0 and 1.26.0 wheels, and no release note from 1.18.0 to 1.26.0 mentions MCP.
+
+**Also learned about the built-in endpoint** (from the 1.25.0 wheel, worth knowing before
+wiring it anywhere): it is registered unconditionally — there is no enable flag. Transport is
+stateless streamable HTTP, one request/one reply, no session id; `GET`/`DELETE` answer 405 and
+JSON-RPC batches are rejected. Auth is the dashboard's own: skipped entirely on a trusted
+Home-Assistant-ingress site (peer-guarded to loopback/supervisor), open if no password is set,
+otherwise `Authorization: Bearer <session token>` or HTTP Basic. Automation writes answer
+`validation: null` rather than block past an 8 s internal budget, to stay under Home
+Assistant's 10 s per-call ceiling.
+
+**Lesson (reusable), and it is the 2026-08-20 lesson sharpened.** The capability shipped inside
+a **bundled dependency's** release, so neither ESPHome's changelog nor
+[esphome#19413](https://github.com/esphome/esphome/pull/19413) — the PR that *looks* like the
+one that added it, and only advertises the endpoint to Home Assistant's supervisor — says an
+MCP server exists. The single reliable signal is the pin in ESPHome's `docker/Dockerfile`:
+
+```bash
+curl -s https://raw.githubusercontent.com/esphome/esphome/<tag>/docker/Dockerfile \
+  | grep device-builder
+```
+
 ## 2026-09-28 — the Device Builder now ships its own MCP server, and that decides this one's future
 
 **Context.** Device Builder **1.15.0** (2026-09-23) added an MCP endpoint at **`/api/mcp`** —
