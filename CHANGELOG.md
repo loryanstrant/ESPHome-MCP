@@ -2,16 +2,68 @@
 
 Versions are dated (`YYYY.MM.N`) and track the ESPHome release they were tested against.
 
-Two version numbers matter when reading these notes: **ESPHome** (2026.9.0) and the
-**Device Builder** dashboard (1.14.9). They ship separately and move independently, so the
+Two version numbers matter when reading these notes: **ESPHome** (2026.10.0) and the
+**Device Builder** dashboard (1.25.0). They ship separately and move independently, so the
 dashboard version is what actually decides which of this server's tools work. Your dashboard
 reports both on the first frame of its WebSocket connection, and this server logs them at
 startup:
 
 ```
-Connected to ESPHome Device Builder 2026.9.0 (server 1.14.9, requires_auth=False)
-                                    ^ESPHome         ^Device Builder
+Connected to ESPHome Device Builder 2026.10.0 (server 1.25.0, requires_auth=False)
+                                    ^ESPHome          ^Device Builder
 ```
+
+---
+
+## 2026.10.0 — 2026-10-26
+
+**Tested against ESPHome 2026.10.0 (Device Builder 1.25.0). No code changes. Your install
+keeps working — upgrade the dashboard whenever you like.**
+
+### The dashboard now has its own MCP server, and this one has a narrower job
+
+ESPHome 2026.10.0 bundles Device Builder **1.25.0**, which serves **21 MCP tools** at
+`POST /api/mcp`, always on. The sunset notice in the previous release said this was coming;
+it has arrived, and it was verified live rather than assumed.
+
+**This server is not being retired.** Six of its tools still have no built-in equivalent, and
+they are the diagnostic half of the surface: `get_device_logs`, `troubleshoot_device`,
+`decode_device_backtrace`, `migrate_device_configuration`, `search_device_configurations` and
+`get_esphome_schema`. The built-in `get_component` cannot describe a component for an ESPHome
+version other than the dashboard's own, which is why the schema tool stays too.
+
+**On the ten tools that do overlap, the two servers are equivalent.** Verified against a live
+2026.10.0 dashboard: reading a config returned byte-for-byte identical YAML through both,
+device facts matched field for field, and validation gave the same verdict. The differences
+are presentation and safety, not correctness:
+
+- This server's device list is **9.4 kB** for 38 devices, against **42.7 kB** from the
+  built-in one, which returns 43 raw fields per device. `list_device_names` is 0.6 kB and has
+  no built-in equivalent. If you are paying per token, that gap is the reason to keep using
+  this for inventory.
+- The built-in `update_config` **refuses to overwrite** a file you have not read, answering
+  `precondition_failed` with a diff. This server's `edit_device_configuration` has no such
+  guard. **Prefer the built-in one for edits.**
+- The built-in endpoint needs the **client** to send HTTP Basic auth if your dashboard has a
+  password (it answers `401` otherwise). This server logs in from `.env`, so it remains the
+  easier target for a client that cannot attach headers — at the cost of serving an
+  unauthenticated endpoint of its own.
+
+**What to do:** point your MCP client at the dashboard's `/api/mcp` for everyday device work,
+and keep this server for the six tools above. Both can be wired at once; they do not conflict.
+Full comparison and the measurements in [`README.md`](README.md) and
+[`DECISIONS.md`](DECISIONS.md).
+
+### Corrections to the 2026.09.0 notes
+
+- It is **21** tools upstream, not "about 22", and the list has not changed since Device
+  Builder 1.17.0 — the MCP source files are byte-identical in the 1.25.0 and 1.26.0 releases,
+  and no release note between 1.18.0 and 1.26.0 mentions MCP at all.
+- The count of tools with no upstream equivalent is **six**, not five: `get_esphome_schema`
+  belongs on that list.
+- The endpoint is served on whichever address your dashboard already answers on — e.g.
+  `https://esphome.example.com/api/mcp` behind a reverse proxy, not only
+  `http://<dashboard>:6052/api/mcp`.
 
 ---
 
