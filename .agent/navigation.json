@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "repository": "ESPHome-MCP",
   "identity": {
-    "description": "An [MCP](https://modelcontextprotocol.io) server for the **ESPHome 2026.6+ \"Device",
+    "description": "An [MCP](https://modelcontextprotocol.io) server for the **ESPHome \"Device Builder\"**",
     "default_branch": "main",
     "languages": {
       "Python": 8
@@ -34,8 +34,23 @@
     {
       "path": "CHANGELOG.md",
       "title": "Changelog",
-      "lines": 206,
+      "lines": 258,
       "headings": [
+        {
+          "level": 2,
+          "text": "2026.10.0 — 2026-10-26",
+          "anchor": "2026100--2026-10-26"
+        },
+        {
+          "level": 3,
+          "text": "The dashboard now has its own MCP server, and this one has a narrower job",
+          "anchor": "the-dashboard-now-has-its-own-mcp-server-and-this-one-has-a-narrower-job"
+        },
+        {
+          "level": 3,
+          "text": "Corrections to the 2026.09.0 notes",
+          "anchor": "corrections-to-the-2026090-notes"
+        },
         {
           "level": 2,
           "text": "2026.09.0 — 2026-09-28",
@@ -111,8 +126,13 @@
     {
       "path": "DECISIONS.md",
       "title": "Decisions & lessons",
-      "lines": 217,
+      "lines": 287,
       "headings": [
+        {
+          "level": 2,
+          "text": "2026-10-26 — it landed; verified live; keep this server, narrowed to six tools",
+          "anchor": "2026-10-26--it-landed-verified-live-keep-this-server-narrowed-to-six-tools"
+        },
         {
           "level": 2,
           "text": "2026-09-28 — the Device Builder now ships its own MCP server, and that decides this one's future",
@@ -138,8 +158,28 @@
     {
       "path": "README.md",
       "title": "ESPHome MCP",
-      "lines": 135,
+      "lines": 205,
       "headings": [
+        {
+          "level": 2,
+          "text": "Which server should I use?",
+          "anchor": "which-server-should-i-use"
+        },
+        {
+          "level": 3,
+          "text": "What only this server does",
+          "anchor": "what-only-this-server-does"
+        },
+        {
+          "level": 3,
+          "text": "What the built-in one does better",
+          "anchor": "what-the-built-in-one-does-better"
+        },
+        {
+          "level": 3,
+          "text": "A note on credentials",
+          "anchor": "a-note-on-credentials"
+        },
         {
           "level": 2,
           "text": "Tools",
@@ -500,8 +540,8 @@
     "tracked_files_only": true
   },
   "generated": {
-    "source_commit": "a0a8075f8ef5aa3f80fceb745c2534ab21e1fdd6",
-    "content_hash": "e37e51ea6cc45cbf",
+    "source_commit": "c73a55022905e4349bbe0e6fe3e01d707cc93304",
+    "content_hash": "11bfc148588671a8",
     "generator": "navgen"
   }
 }
